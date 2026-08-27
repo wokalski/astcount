@@ -34,14 +34,51 @@ the flake.
 
 ## Usage
 
+Count the current directory, or name a narrower source tree:
+
 ```console
+astcount .
 astcount count src
+```
+
+Add a per-file breakdown when you want to find the largest files. Rows are
+sorted by selected node count, with the largest files last. `--stats` adds the
+operational summary below the table:
+
+```console
 astcount count . --files
 astcount count . --files --stats
+```
+
+Use `--stream` when seeing results immediately matters more than sorting. Human
+rows are printed as parsing completes; combined with `--json`, each line is a
+JSON file event followed by one summary event:
+
+```console
+astcount count . --stream
+astcount count . --stream --json
+```
+
+Parsing uses the machine's available parallelism automatically. Override the
+worker count when you need to reserve CPU or make completion order reproducible:
+
+```console
 astcount count . --threads 4
+```
+
+The default metric includes every Tree-sitter node. Exclude node kinds or
+properties to focus the measurement:
+
+```console
 astcount count . --exclude anonymous
 astcount count . --exclude anonymous,extra
 astcount count . --exclude extra,error,missing
+```
+
+Use JSON for automation, or save two complete reports and compare them. The
+comparison can fail CI when the selected node count grows:
+
+```console
 astcount count . --json
 astcount count . --save before.json
 astcount count . --save after.json
@@ -68,10 +105,14 @@ node. Properties overlap: an extra comment can also be named. Parser error and
 missing-node diagnostics remain raw and unfiltered even when those properties
 are excluded from the selected complexity count.
 
-Human output puts paths first and shows only the selected node count. `--stats`
-adds a final line with files, bytes, wall time, aggregate parse time, throughput,
-and raw parser diagnostics. JSON and saved schema-3 reports group selected and
-raw counts under `nodes`, with raw property counts under `nodes.by_property`.
+Human output puts paths first and shows only the selected node count. With
+`--files`, rows are buffered and sorted from smallest to largest by that count;
+`--stream` instead emits them in parser-completion order. `--stats` adds a final
+line with files, bytes, wall time, aggregate parse time, throughput, and raw
+parser diagnostics. JSON and saved schema-3 reports group selected and raw
+counts under `nodes`, with raw property counts under `nodes.by_property`.
+`--stream --json` switches stdout to JSONL: zero or more `file` events followed
+by one `summary` event.
 
 Tree-sitter also exposes each node's grammar-specific kind/name and id, source
 range, child counts, fields, parse states, and whether a node or subtree changed.
@@ -111,9 +152,11 @@ lifecycle scripts disabled, and invokes the installed command. Release
 automation and public-cache setup are documented in
 [`RELEASING.md`](RELEASING.md).
 
-The repository also includes the [`astcount-reduce-complexity`](skills/astcount-reduce-complexity/SKILL.md)
-Codex skill. Give it an exact test command and it will iteratively accept only
-behavior-preserving refactors that reduce the named-node count.
+The repository includes two Codex skills. [`astcount-refactor`](skills/astcount-refactor/SKILL.md)
+guides one bounded, behavior-preserving refactor using before/after measurements.
+[`astcount-verified-refactor-loop`](skills/astcount-verified-refactor-loop/SKILL.md)
+runs the guarded iterative version: every candidate must pass the user's exact
+deterministic test command and lower the named-node count before it is accepted.
 
 ## What the number means
 

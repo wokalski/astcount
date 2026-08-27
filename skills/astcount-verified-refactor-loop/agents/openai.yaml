@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verified astcount Refactor Loop"
+  short_description: "Loop through refactors behind a deterministic test gate"
+  default_prompt: "Use $astcount-verified-refactor-loop to repeatedly reduce named-node complexity behind my exact deterministic test command."

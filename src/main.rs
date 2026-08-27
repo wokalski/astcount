@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fmt::Write as _;
-use std::io::Read;
+use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -77,6 +78,10 @@ struct CountArgs {
     #[arg(long)]
     files: bool,
 
+    /// Stream file results as they complete (JSONL with --json)
+    #[arg(long)]
+    stream: bool,
+
     /// Print file, byte, diagnostic, and timing statistics
     #[arg(long, conflicts_with = "json")]
     stats: bool,
@@ -149,28 +154,51 @@ fn run() -> Result<()> {
 
 #[allow(clippy::too_many_lines)]
 fn run_count(args: &CountArgs) -> Result<()> {
-    let excluded = args
+    let node_exclusions = args
         .exclude
         .iter()
         .copied()
         .map(NodeKind::from)
         .collect::<Vec<_>>();
-    let filter = NodeFilter::excluding(&excluded)?;
+    let filter = NodeFilter::excluding(&node_exclusions)?;
     let started = Instant::now();
     let builder = walk_builder(args)?;
     let current_dir = std::env::current_dir().context("get current directory")?;
-    let excluded: HashSet<PathBuf> = args
+    let saved_paths: HashSet<PathBuf> = args
         .save
         .iter()
         .map(|path| absolute_path(path, &current_dir))
         .collect();
-    let (work, mut outcomes) = discover_files(&builder, &excluded, &current_dir);
+    let (work, mut outcomes) = discover_files(&builder, &saved_paths, &current_dir);
+    let stream_path_width = (args.stream && !args.json).then(|| {
+        work.iter()
+            .map(|item| item.path.display().to_string().chars().count())
+            .chain(["path".len(), "total".len()])
+            .max()
+            .unwrap_or(5)
+    });
+    if let Some(path_width) = stream_path_width {
+        print!("{}", render_human_header(&node_exclusions, path_width));
+        std::io::stdout().flush().context("flush streamed output")?;
+    }
+    let mut stream_error = None;
     outcomes.extend(process_files(
         &work,
         args.language.as_deref(),
         filter,
         args.threads,
+        |outcome| {
+            if args.stream
+                && stream_error.is_none()
+                && let Outcome::Counted(file, _) = outcome
+            {
+                stream_error = write_stream_file(file, args.json, stream_path_width).err();
+            }
+        },
     ));
+    if let Some(error) = stream_error {
+        return Err(error).context("write streamed output");
+    }
 
     let mut files = Vec::new();
     let mut failures = Vec::new();
@@ -207,9 +235,22 @@ fn run_count(args: &CountArgs) -> Result<()> {
         std::fs::write(path, json).with_context(|| format!("write {}", path.display()))?;
     }
 
-    if args.json {
+    if args.json && args.stream {
+        write_jsonl_summary(&report)?;
+    } else if args.json {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &report)?;
         println!();
+    } else if let Some(path_width) = stream_path_width {
+        print!(
+            "{}",
+            render_human_footer(
+                &report,
+                started.elapsed(),
+                parse_time,
+                path_width,
+                args.stats,
+            )
+        );
     } else {
         print_human(
             &report,
@@ -315,12 +356,16 @@ fn discover_files(
     (work, failures)
 }
 
-fn process_files(
+fn process_files<F>(
     work: &[WorkItem],
     forced_language: Option<&str>,
     filter: NodeFilter,
     requested_workers: usize,
-) -> Vec<Outcome> {
+    mut on_outcome: F,
+) -> Vec<Outcome>
+where
+    F: FnMut(&Outcome),
+{
     if work.is_empty() {
         return Vec::new();
     }
@@ -332,51 +377,52 @@ fn process_files(
     }
     .min(work.len());
     let next = AtomicUsize::new(0);
+    let (sender, receiver) = mpsc::channel();
 
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let next = &next;
+            let sender = sender.clone();
             handles.push(scope.spawn(move || {
                 let mut parsers: HashMap<String, TsParser> = HashMap::new();
                 let mut source = Vec::new();
-                let mut outcomes = Vec::new();
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(item) = work.get(index) else {
                         break;
                     };
-                    match process_path(
+                    let outcome = match process_path(
                         &item.path,
                         forced_language,
                         filter,
                         &mut parsers,
                         &mut source,
                     ) {
-                        Ok(Some(result)) => {
-                            outcomes.push(Outcome::Counted(result.metrics, result.elapsed));
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            outcomes.push(Outcome::Failed(item.path.clone(), error));
-                        }
+                        Ok(Some(result)) => Some(Outcome::Counted(result.metrics, result.elapsed)),
+                        Ok(None) => None,
+                        Err(error) => Some(Outcome::Failed(item.path.clone(), error)),
+                    };
+                    if outcome.is_some_and(|outcome| sender.send(outcome).is_err()) {
+                        break;
                     }
                 }
-                outcomes
             }));
         }
 
-        handles
+        drop(sender);
+        let mut outcomes = receiver
             .into_iter()
-            .flat_map(|handle| {
-                handle.join().unwrap_or_else(|_| {
-                    vec![Outcome::Failed(
-                        PathBuf::new(),
-                        anyhow!("parser worker panicked"),
-                    )]
-                })
-            })
-            .collect()
+            .inspect(&mut on_outcome)
+            .collect::<Vec<_>>();
+        for handle in handles {
+            if handle.join().is_err() {
+                let outcome = Outcome::Failed(PathBuf::new(), anyhow!("parser worker panicked"));
+                on_outcome(&outcome);
+                outcomes.push(outcome);
+            }
+        }
+        outcomes
     })
 }
 
@@ -487,26 +533,40 @@ fn render_human(
     show_files: bool,
     show_stats: bool,
 ) -> String {
-    let mut output = String::new();
-    let paths = report
-        .files
+    let mut files = if show_files {
+        report.files.iter().collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    files.sort_unstable_by(|left, right| {
+        left.nodes
+            .selected
+            .cmp(&right.nodes.selected)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let path_width = files
         .iter()
-        .filter(|_| show_files)
-        .map(|file| file.path.display().to_string())
-        .collect::<Vec<_>>();
-    let path_width = paths
-        .iter()
-        .map(|path| path.chars().count())
+        .map(|file| file.path.display().to_string().chars().count())
         .chain(["path".len(), "total".len()])
         .max()
         .unwrap_or(5);
-    if !report.filter.excluded.is_empty() {
+    let mut output = render_human_header(&report.filter.excluded, path_width);
+    for file in files {
+        output.push_str(&render_file_row(file, path_width));
+    }
+    output.push_str(&render_human_footer(
+        report, elapsed, parse_time, path_width, show_stats,
+    ));
+    output
+}
+
+fn render_human_header(excluded: &[NodeKind], path_width: usize) -> String {
+    let mut output = String::new();
+    if !excluded.is_empty() {
         writeln!(
             output,
             "excluding: {}\n",
-            report
-                .filter
-                .excluded
+            excluded
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -516,19 +576,67 @@ fn render_human(
     }
     let node_width = 12;
     writeln!(output, "{:<path_width$}  {:>node_width$}", "path", "nodes").expect("write to string");
-    if show_files {
-        for (file, path) in report.files.iter().zip(paths) {
-            writeln!(
-                output,
-                "{path:<path_width$}  {:>node_width$}",
-                human_count(file.nodes.selected),
-            )
-            .expect("write to string");
-        }
+    output
+}
+
+fn render_file_row(file: &FileMetrics, path_width: usize) -> String {
+    let path = file.path.display().to_string();
+    format!(
+        "{path:<path_width$}  {:>12}\n",
+        human_count(file.nodes.selected)
+    )
+}
+
+fn write_stream_file(file: &FileMetrics, json: bool, path_width: Option<usize>) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    if json {
+        serde_json::to_writer(&mut output, &jsonl_file_event(file))?;
+        writeln!(output)?;
+    } else {
+        let path_width = path_width.expect("human streams have a path width");
+        output.write_all(render_file_row(file, path_width).as_bytes())?;
     }
+    output.flush()?;
+    Ok(())
+}
+
+fn write_jsonl_summary(report: &Report) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    serde_json::to_writer(&mut output, &jsonl_summary_event(report))?;
+    writeln!(output)?;
+    output.flush()?;
+    Ok(())
+}
+
+fn jsonl_file_event(file: &FileMetrics) -> serde_json::Value {
+    serde_json::json!({ "type": "file", "schema": 3, "file": file })
+}
+
+fn jsonl_summary_event(report: &Report) -> serde_json::Value {
+    serde_json::json!({
+        "type": "summary",
+        "schema": report.schema,
+        "tool_version": &report.tool_version,
+        "parser_backend": &report.parser_backend,
+        "filter": &report.filter,
+        "totals": &report.totals,
+    })
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn render_human_footer(
+    report: &Report,
+    elapsed: Duration,
+    parse_time: Duration,
+    path_width: usize,
+    show_stats: bool,
+) -> String {
+    let mut output = String::new();
     writeln!(
         output,
-        "{:<path_width$}  {:>node_width$}",
+        "{:<path_width$}  {:>12}",
         "total",
         human_count(report.totals.nodes.selected),
     )
@@ -634,17 +742,6 @@ mod tests {
     fn sample_report(error: u64, missing: u64) -> Report {
         let files = vec![
             FileMetrics {
-                path: PathBuf::from("src/lib.rs"),
-                language: "rust".to_owned(),
-                nodes: NodeCounts {
-                    selected: 1_234,
-                    total: 2_000,
-                    by_property: PropertyCounts::default(),
-                },
-                max_depth: 4,
-                bytes: 512 * 1024,
-            },
-            FileMetrics {
                 path: PathBuf::from("src/main.rs"),
                 language: "rust".to_owned(),
                 nodes: NodeCounts {
@@ -653,6 +750,17 @@ mod tests {
                     by_property: PropertyCounts::default(),
                 },
                 max_depth: 5,
+                bytes: 512 * 1024,
+            },
+            FileMetrics {
+                path: PathBuf::from("src/lib.rs"),
+                language: "rust".to_owned(),
+                nodes: NodeCounts {
+                    selected: 1_234,
+                    total: 2_000,
+                    by_property: PropertyCounts::default(),
+                },
+                max_depth: 4,
                 bytes: 512 * 1024,
             },
         ];
@@ -681,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn human_output_is_path_first_and_stats_are_opt_in() {
+    fn human_output_is_path_first_size_sorted_and_stats_are_opt_in() {
         let report = sample_report(0, 0);
         let plain = render_human(
             &report,
@@ -698,6 +806,8 @@ mod tests {
         );
         assert!(lines[3].starts_with("src/lib.rs"));
         assert!(lines[3].ends_with("1,234"));
+        assert!(lines[4].starts_with("src/main.rs"));
+        assert!(lines[4].ends_with("98,765"));
         assert!(lines[5].starts_with("total"));
         assert!(lines[5].ends_with("99,999"));
         assert!(!plain.contains("files ·"));
@@ -713,6 +823,35 @@ mod tests {
         assert!(with_stats.ends_with(
             "2 files · 1.0 MiB · 4.0 ms wall · 7.0 ms aggregate parse · 250.0 MiB/s · 0 error nodes · 0 missing nodes\n"
         ));
+    }
+
+    #[test]
+    fn streamed_rows_preserve_completion_order_and_jsonl_events_are_typed() {
+        let report = sample_report(0, 0);
+        let streamed = report
+            .files
+            .iter()
+            .map(|file| render_file_row(file, 12))
+            .collect::<String>();
+        assert!(
+            streamed.find("src/main.rs").expect("first completed row")
+                < streamed.find("src/lib.rs").expect("second completed row")
+        );
+
+        let file_line = serde_json::to_string(&jsonl_file_event(&report.files[0]))
+            .expect("serialize file event");
+        let file: serde_json::Value = serde_json::from_str(&file_line).expect("parse file event");
+        assert_eq!(file["type"], "file");
+        assert_eq!(file["schema"], 3);
+        assert_eq!(file["file"]["path"], "src/main.rs");
+
+        let summary_line =
+            serde_json::to_string(&jsonl_summary_event(&report)).expect("serialize summary event");
+        let summary: serde_json::Value =
+            serde_json::from_str(&summary_line).expect("parse summary event");
+        assert_eq!(summary["type"], "summary");
+        assert_eq!(summary["totals"]["files"], 2);
+        assert!(summary.get("files").is_none());
     }
 
     #[test]

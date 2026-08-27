@@ -1,0 +1,4 @@
+interface:
+  display_name: "Refactor Once with astcount"
+  short_description: "Make one measured complexity-reducing refactor"
+  default_prompt: "Use $astcount-refactor to make one behavior-preserving refactor and verify its astcount improvement."
