@@ -2,9 +2,10 @@
 
 [![skills.sh](https://skills.sh/b/wokalski/astcount)](https://skills.sh/wokalski/astcount)
 
-`astcount` is a fast, polyglot Tree-sitter node counter. Node count is a rough
-complexity metric that ignores formatting churn, making it useful for measuring
-whether a refactor actually simplified the code.
+`astcount` measures source code through its Tree-sitter syntax tree. A syntax
+tree keeps the structure of a program while ignoring whitespace, line wrapping,
+and identifier length. Counting its nodes gives a rough estimate of how much
+code is actually there, rather than how much space the text takes up.
 
 ## Agent usage
 
