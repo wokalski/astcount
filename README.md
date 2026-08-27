@@ -14,21 +14,19 @@ benchmark for whether a refactor made code structurally simpler.
 
 ## Agent usage
 
-Run either skill directly with Codex through the
-[skills.sh CLI](https://skills.sh/wokalski/astcount), without installing it:
+Install both skills globally for Codex with the
+[skills.sh CLI](https://skills.sh/wokalski/astcount):
 
 ```console
-bunx skills use wokalski/astcount@astcount-refactor --agent codex
-bunx skills use wokalski/astcount@astcount-verified-refactor-loop --agent codex
+bunx skills add wokalski/astcount --skill '*' --agent codex --global --yes
 ```
 
-To keep the skills available in Codex or another supported coding agent, install
-either or both of them:
+Then open Codex in the repository you want to change and include the skill and
+task in the same prompt. These are Codex prompts, not shell commands:
 
-```console
-bunx skills add wokalski/astcount
-bunx skills add wokalski/astcount --skill astcount-refactor
-bunx skills add wokalski/astcount --skill astcount-verified-refactor-loop
+```text
+$astcount-refactor Refactor this repository.
+$astcount-verified-refactor-loop Refactor src repeatedly. Use `bun test` as the exact deterministic test command. Stop after five accepted refactors.
 ```
 
 [`astcount-refactor`](skills/astcount-refactor/SKILL.md) keeps digging through
@@ -38,6 +36,19 @@ runs the guarded iterative version: every candidate must pass the user's exact
 deterministic test command and lower the named-node count before it is accepted.
 Both skills detect Nix users with `command -v nix`; otherwise they run the pinned
 release through Bun, with npx as a fallback.
+
+### Try without installing
+
+`skills use` can instead download one skill and open a temporary Codex session:
+
+```console
+bunx skills use wokalski/astcount@astcount-refactor --agent codex
+bunx skills use wokalski/astcount@astcount-verified-refactor-loop --agent codex
+```
+
+The new session starts with the selected skill loaded and then waits for the
+actual refactoring request. This is useful for a quick trial; installation is
+the smoother workflow for repeated use.
 
 ## Install
 
