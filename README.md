@@ -12,6 +12,33 @@ change those textual metrics without simplifying the program, while leaving its
 syntax tree largely unchanged. `astcount` therefore works well as a directional
 benchmark for whether a refactor made code structurally simpler.
 
+## Agent usage
+
+Run either skill directly with Codex through the
+[skills.sh CLI](https://skills.sh/wokalski/astcount), without installing it:
+
+```console
+bunx skills use wokalski/astcount@astcount-refactor --agent codex
+bunx skills use wokalski/astcount@astcount-verified-refactor-loop --agent codex
+```
+
+To keep the skills available in Codex or another supported coding agent, install
+either or both of them:
+
+```console
+bunx skills add wokalski/astcount
+bunx skills add wokalski/astcount --skill astcount-refactor
+bunx skills add wokalski/astcount --skill astcount-verified-refactor-loop
+```
+
+[`astcount-refactor`](skills/astcount-refactor/SKILL.md) guides one bounded,
+behavior-preserving refactor using before/after measurements.
+[`astcount-verified-refactor-loop`](skills/astcount-verified-refactor-loop/SKILL.md)
+runs the guarded iterative version: every candidate must pass the user's exact
+deterministic test command and lower the named-node count before it is accepted.
+Both skills detect Nix users with `command -v nix`; otherwise they run the pinned
+release through Bun, with npx as a fallback.
+
 ## Install
 
 Run the native binary with Bun:
@@ -153,33 +180,6 @@ package, installs the launcher and native package from their tarballs with
 lifecycle scripts disabled, and invokes the installed command. Release
 automation and public-cache setup are documented in
 [`RELEASING.md`](RELEASING.md).
-
-## Agent skills
-
-Run either skill directly with Codex through the
-[skills.sh CLI](https://skills.sh/wokalski/astcount), without installing it:
-
-```console
-bunx skills use wokalski/astcount@astcount-refactor --agent codex
-bunx skills use wokalski/astcount@astcount-verified-refactor-loop --agent codex
-```
-
-To keep the skills available in Codex or another supported coding agent, install
-either or both of them:
-
-```console
-bunx skills add wokalski/astcount
-bunx skills add wokalski/astcount --skill astcount-refactor
-bunx skills add wokalski/astcount --skill astcount-verified-refactor-loop
-```
-
-[`astcount-refactor`](skills/astcount-refactor/SKILL.md) guides one bounded,
-behavior-preserving refactor using before/after measurements.
-[`astcount-verified-refactor-loop`](skills/astcount-verified-refactor-loop/SKILL.md)
-runs the guarded iterative version: every candidate must pass the user's exact
-deterministic test command and lower the named-node count before it is accepted.
-Both skills detect Nix users with `command -v nix`; otherwise they run the pinned
-release through Bun, with npx as a fallback.
 
 ## What the number means
 
