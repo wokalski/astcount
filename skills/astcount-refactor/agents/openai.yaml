@@ -1,4 +1,4 @@
 interface:
-  display_name: "Refactor Once with astcount"
-  short_description: "Make one measured complexity-reducing refactor"
-  default_prompt: "Use $astcount-refactor to make one behavior-preserving refactor and verify its astcount improvement."
+  display_name: "Deep astcount Refactor"
+  short_description: "Keep simplifying until structural gains are exhausted"
+  default_prompt: "Use $astcount-refactor to deeply refactor this codebase, keep finding behavior-preserving simplifications, and verify every astcount improvement."

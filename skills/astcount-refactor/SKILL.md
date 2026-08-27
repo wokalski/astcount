@@ -1,12 +1,14 @@
 ---
 name: astcount-refactor
-description: Perform one bounded, behavior-preserving code refactor guided by before-and-after astcount measurements. Use for a focused structural simplification; use astcount-verified-refactor-loop instead when the user wants repeated optimization with the same deterministic test gate.
+description: Deeply refactor a codebase through repeated behavior-preserving simplifications guided by astcount measurements and relevant tests, continuing until no credible structural improvement remains. Use for sustained complexity reduction; use astcount-verified-refactor-loop instead when the same user-specified deterministic test command must gate every candidate.
 ---
 
-# Refactor once with astcount
+# Refactor deeply with astcount
 
-Make one cohesive refactor that reduces Tree-sitter named-node count without
-changing behavior.
+Keep finding and applying readable, behavior-preserving simplifications that
+reduce Tree-sitter named-node count. Do not stop after the first successful
+decrease. Continue autonomously in the same run; do not hand control back or ask
+whether to continue merely because one or several refactors succeeded.
 
 ## Measure
 
@@ -26,32 +28,46 @@ every command below. Keep the astcount version, parser backend, scope, language
 overrides, and ignore policy fixed. Save reports outside the measured scope:
 
 ```console
-<astcount-command> count <scope> --exclude anonymous --json --save <before.json>
+<astcount-command> count <scope> --exclude anonymous --json --save <best.json>
 ```
 
-Use the per-file counts to choose one high-value target. Inspect the code and its
-tests before editing, then make one readable, behavior-preserving simplification.
-Do not broaden the task into an optimization loop.
+Use the per-file counts to rank several high-value areas. Inspect their code,
+tests, callers, and neighboring abstractions before deciding which candidates
+are genuine simplifications rather than metric tricks.
 
-## Verify
+## Keep digging
 
-Format the changed code and run the relevant existing tests, including any exact
-command supplied by the user. Do not weaken tests or alter public behavior
-without permission. Recount the identical scope:
+Work through small candidates so each one can be accepted or rejected cleanly:
+
+1. Choose a credible simplification from the highest-value remaining areas.
+2. Make the change and format the affected code.
+3. Run the relevant existing tests, including any exact command supplied by the
+   user. Do not weaken tests or alter public behavior without permission.
+4. Recount the identical scope into a candidate report.
+5. Compare the best accepted report with the candidate:
 
 ```console
-<astcount-command> count <scope> --exclude anonymous --json --save <after.json>
-<astcount-command> compare <before.json> <after.json> --fail-on-increase
+<astcount-command> count <scope> --exclude anonymous --json --save <candidate.json>
+<astcount-command> compare <best.json> <candidate.json> --fail-on-increase
 ```
 
-Keep the refactor only when verification passes and named-node count decreases.
-If it fails either gate, undo only this skill's edits without disturbing prior
-user changes, and report the rejected candidate.
+6. Accept the candidate only when its tests pass and named-node count decreases.
+   Otherwise, undo only that candidate without disturbing prior user changes.
+7. Replace the best report with an accepted candidate, re-rank the remaining
+   files, and continue. A successful candidate is progress, not a stopping
+   condition.
+
+Before stopping for lack of opportunities, inspect multiple high-count areas and
+their surrounding abstractions. Stop only when no credible simplification
+remains, the user-supplied limit is reached, or further count reduction would
+trade away behavior, clarity, public APIs, runtime, or allocation. Run the broad
+relevant test suite once more after the final accepted candidate.
 
 Do not game the metric with minification, generated code, macros, parser tricks,
 moved files, ignore changes, or comment deletion. Reject changes that make the
 code harder to understand or materially regress depth, duplication, runtime, or
 allocation.
 
-Report the scope, version/backend, test command and result, before/after counts,
-delta and percentage, the refactor, and any tradeoff.
+Report the scope, version/backend, test commands and results, initial and final
+counts, delta and percentage, accepted refactors, rejected candidates, areas
+inspected, stopping reason, and tradeoffs.

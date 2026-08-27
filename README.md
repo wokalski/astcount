@@ -31,8 +31,8 @@ bunx skills add wokalski/astcount --skill astcount-refactor
 bunx skills add wokalski/astcount --skill astcount-verified-refactor-loop
 ```
 
-[`astcount-refactor`](skills/astcount-refactor/SKILL.md) guides one bounded,
-behavior-preserving refactor using before/after measurements.
+[`astcount-refactor`](skills/astcount-refactor/SKILL.md) keeps digging through
+behavior-preserving refactors until credible structural gains are exhausted.
 [`astcount-verified-refactor-loop`](skills/astcount-verified-refactor-loop/SKILL.md)
 runs the guarded iterative version: every candidate must pass the user's exact
 deterministic test command and lower the named-node count before it is accepted.
