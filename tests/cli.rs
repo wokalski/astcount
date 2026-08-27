@@ -9,8 +9,54 @@ fn help_describes_the_metric() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("utf8 help");
     assert!(stdout.contains("Tree-sitter node counter"));
+    assert!(stdout.contains("count"));
+    assert!(stdout.contains("compare"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_astcount"))
+        .args(["count", "--help"])
+        .output()
+        .expect("run astcount count --help");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("utf8 help");
     assert!(stdout.contains("--require"));
     assert!(stdout.contains("--exclude"));
     assert!(stdout.contains("named, anonymous, extra, error, missing"));
-    assert!(stdout.contains("--compare"));
+}
+
+#[test]
+fn implicit_count_matches_explicit_count() {
+    let binary = env!("CARGO_BIN_EXE_astcount");
+    let report = std::env::temp_dir().join(format!("astcount-cli-{}.json", std::process::id()));
+    let missing = "this-path-must-not-exist.astcount-test";
+    let implicit = Command::new(binary)
+        .arg(missing)
+        .output()
+        .expect("run implicit count");
+    let explicit = Command::new(binary)
+        .args(["count", missing])
+        .output()
+        .expect("run explicit count");
+    assert!(!implicit.status.success());
+    assert_eq!(implicit.status, explicit.status);
+    assert_eq!(implicit.stdout, explicit.stdout);
+    assert_eq!(implicit.stderr, explicit.stderr);
+
+    std::fs::write(
+        &report,
+        r#"{"schema":2,"tool_version":"0.1.0","parser_backend":"test","selection":{"require":["named"],"exclude":[]},"totals":{"files":0,"nodes":1,"total_nodes":1,"named_nodes":1,"extra_nodes":0,"error_nodes":0,"missing_nodes":0,"bytes":0},"files":[]}"#,
+    )
+    .expect("write report");
+    let output = Command::new(binary)
+        .arg("compare")
+        .args([&report, &report])
+        .arg("--json")
+        .output()
+        .expect("compare reports");
+    assert!(output.status.success());
+    let comparison: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse comparison JSON");
+    assert_eq!(comparison["schema"], 1);
+    assert_eq!(comparison["delta_nodes"], 0);
+    assert_eq!(comparison["percent_change"], 0.0);
+    std::fs::remove_file(report).expect("remove temporary report");
 }

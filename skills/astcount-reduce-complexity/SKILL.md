@@ -16,7 +16,7 @@ Use `astcount`, or `nix run github:wokalski/astcount --` if unavailable. Keep it
 Run the tests. Stop on a pre-existing failure unless the user authorizes a red baseline. Save the initial report outside the measured scope:
 
 ```console
-astcount <scope> --require named --json --save <before.json>
+astcount count <scope> --require named --json --save <before.json>
 ```
 
 ## Iterate
@@ -24,11 +24,11 @@ astcount <scope> --require named --json --save <before.json>
 1. Use per-file JSON counts to choose a high-value target.
 2. Make one small, behavior-preserving simplification.
 3. Format the changed code and run the exact test command.
-4. Recount the identical scope with `--require named`.
+4. Recount the identical scope with `--require named` and save a candidate report.
 5. Accept only if tests pass and named nodes decrease; otherwise revert only that candidate without disturbing user work.
 6. Update the current-best report and repeat while credible improvements remain.
 
-Use `--compare <best.json> --fail-on-increase` as a guard. Run the full tests after the final accepted change.
+Use `astcount compare <best.json> <candidate.json> --fail-on-increase` as a guard. Run the full tests after the final accepted change.
 
 ## Guardrails
 

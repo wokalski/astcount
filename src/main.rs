@@ -9,7 +9,7 @@ use astcount::{
     FileMetrics, NodeProperty, NodeSelection, Report, count_source_with_parser,
     detect_known_language, report,
 };
-use clap::{Parser, ValueEnum};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use ignore::WalkBuilder;
 use tree_sitter::Parser as TsParser;
 use tree_sitter_language_pack::get_language;
@@ -37,8 +37,25 @@ impl NodePredicateArg {
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    #[command(flatten)]
+    count: CountArgs,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Count syntax-tree nodes
+    Count(CountArgs),
+    /// Compare two saved JSON reports
+    Compare(CompareArgs),
+}
+
+#[derive(Debug, ClapArgs)]
 #[allow(clippy::struct_excessive_bools)]
-struct Args {
+struct CountArgs {
     /// Files or directories to measure
     #[arg(default_value = ".")]
     paths: Vec<PathBuf>,
@@ -67,14 +84,6 @@ struct Args {
     #[arg(long, value_name = "FILE")]
     save: Option<PathBuf>,
 
-    /// Compare totals against a report created by --save
-    #[arg(long, value_name = "FILE")]
-    compare: Option<PathBuf>,
-
-    /// Exit unsuccessfully if node count increased from --compare
-    #[arg(long, requires = "compare")]
-    fail_on_increase: bool,
-
     /// Exit unsuccessfully if Tree-sitter produced error or missing nodes
     #[arg(long)]
     fail_on_parse_error: bool,
@@ -90,6 +99,23 @@ struct Args {
     /// Number of parser workers (0 chooses automatically)
     #[arg(short = 'j', long, default_value_t = 0)]
     threads: usize,
+}
+
+#[derive(Debug, ClapArgs)]
+struct CompareArgs {
+    /// Earlier JSON report created by count --save
+    before: PathBuf,
+
+    /// Later JSON report created by count --save
+    after: PathBuf,
+
+    /// Emit the comparison as JSON
+    #[arg(long)]
+    json: bool,
+
+    /// Exit unsuccessfully if the selected node count increased
+    #[arg(long)]
+    fail_on_increase: bool,
 }
 
 #[derive(Debug)]
@@ -111,9 +137,17 @@ fn main() {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn run() -> Result<()> {
-    let args = Args::parse();
+    let cli = Cli::parse();
+    match &cli.command {
+        Some(Command::Count(args)) => run_count(args),
+        Some(Command::Compare(args)) => run_compare(args),
+        None => run_count(&cli.count),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_count(args: &CountArgs) -> Result<()> {
     let mut required = Vec::new();
     let mut excluded_properties = Vec::new();
     for predicate in &args.require {
@@ -130,12 +164,11 @@ fn run() -> Result<()> {
     }
     let selection = NodeSelection::new(&required, &excluded_properties)?;
     let started = Instant::now();
-    let builder = walk_builder(&args)?;
+    let builder = walk_builder(args)?;
     let current_dir = std::env::current_dir().context("get current directory")?;
     let excluded: HashSet<PathBuf> = args
         .save
         .iter()
-        .chain(args.compare.iter())
         .map(|path| absolute_path(path, &current_dir))
         .collect();
     let (work, mut outcomes) = discover_files(&builder, &excluded, &current_dir);
@@ -176,15 +209,6 @@ fn run() -> Result<()> {
         bail!("no supported source files found");
     }
 
-    let comparison = args
-        .compare
-        .as_deref()
-        .map(|path| {
-            let old = load_report(path)?;
-            difference(&report, &old)
-        })
-        .transpose()?;
-
     if let Some(path) = &args.save {
         let json = serde_json::to_vec_pretty(&report)?;
         std::fs::write(path, json).with_context(|| format!("write {}", path.display()))?;
@@ -194,21 +218,12 @@ fn run() -> Result<()> {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &report)?;
         println!();
     } else {
-        print_human(
-            &report,
-            started.elapsed(),
-            parse_time,
-            comparison,
-            args.files,
-        );
+        print_human(&report, started.elapsed(), parse_time, args.files);
     }
 
     if args.fail_on_parse_error
         && (report.totals.error_nodes > 0 || report.totals.missing_nodes > 0)
     {
-        std::process::exit(1);
-    }
-    if args.fail_on_increase && comparison.is_some_and(|delta| delta > 0) {
         std::process::exit(1);
     }
     if failures.is_empty() {
@@ -218,7 +233,37 @@ fn run() -> Result<()> {
     }
 }
 
-fn walk_builder(args: &Args) -> Result<WalkBuilder> {
+fn run_compare(args: &CompareArgs) -> Result<()> {
+    let before = load_report(&args.before)?;
+    let after = load_report(&args.after)?;
+    let delta = difference(&after, &before)?;
+    let percent = percent_change(before.totals.nodes, delta);
+    if args.json {
+        serde_json::to_writer_pretty(
+            std::io::stdout().lock(),
+            &serde_json::json!({
+                "schema": 1,
+                "parser_backend": after.parser_backend,
+                "selection": after.selection,
+                "before": { "path": args.before, "nodes": before.totals.nodes },
+                "after": { "path": args.after, "nodes": after.totals.nodes },
+                "delta_nodes": delta,
+                "percent_change": percent,
+            }),
+        )?;
+        println!();
+    } else {
+        println!("{:>12}  {}", before.totals.nodes, args.before.display());
+        println!("{:>12}  {}", after.totals.nodes, args.after.display());
+        print_change(delta, percent);
+    }
+    if args.fail_on_increase && delta > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn walk_builder(args: &CountArgs) -> Result<WalkBuilder> {
     let (first, rest) = args
         .paths
         .split_first()
@@ -421,13 +466,7 @@ fn difference(current: &Report, previous: &Report) -> Result<i128> {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn print_human(
-    report: &Report,
-    elapsed: Duration,
-    parse_time: Duration,
-    comparison: Option<i128>,
-    show_files: bool,
-) {
+fn print_human(report: &Report, elapsed: Duration, parse_time: Duration, show_files: bool) {
     if show_files {
         println!(
             "{:>12}  {:>12}  {:>8}  {:>8}  path",
@@ -455,24 +494,23 @@ fn print_human(
         human_bytes(report.totals.bytes),
         throughput(report.totals.bytes, elapsed)
     );
-    if let Some(delta) = comparison {
-        let percent = if delta == 0 {
-            0.0
-        } else {
-            let previous = i128::from(report.totals.nodes) - delta;
-            if previous == 0 {
-                f64::INFINITY.copysign(delta as f64)
-            } else {
-                delta as f64 * 100.0 / previous as f64
-            }
-        };
-        println!("change: {delta:+} nodes ({percent:+.2}%)");
-    }
     eprintln!(
         "measured in {:.1} ms wall time ({:.1} ms aggregate parse time)",
         elapsed.as_secs_f64() * 1_000.0,
         parse_time.as_secs_f64() * 1_000.0
     );
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn percent_change(before: u64, delta: i128) -> Option<f64> {
+    (before != 0).then(|| delta as f64 * 100.0 / before as f64)
+}
+
+fn print_change(delta: i128, percent: Option<f64>) {
+    match percent {
+        Some(percent) => println!("change: {delta:+} nodes ({percent:+.2}%)"),
+        None => println!("change: {delta:+} nodes (n/a)"),
+    }
 }
 
 #[allow(clippy::cast_precision_loss)]

@@ -26,16 +26,22 @@ the flake.
 ## Usage
 
 ```console
-astcount src
-astcount . --files
-astcount . --threads 4
-astcount . --require named
-astcount . --require named --exclude extra
-astcount . --require error
-astcount . --json
-astcount . --save baseline.json
-astcount . --compare baseline.json --fail-on-increase
+astcount count src
+astcount count . --files
+astcount count . --threads 4
+astcount count . --require named
+astcount count . --require named --exclude extra
+astcount count . --require error
+astcount count . --json
+astcount count . --save before.json
+astcount count . --save after.json
+astcount compare before.json after.json --fail-on-increase
+astcount compare before.json after.json --json
 ```
+
+Bare `astcount` defaults to `astcount count .`. For compatibility and quick
+interactive use, count options and paths may also omit the `count` subcommand,
+so `astcount src --require named` is equivalent to the explicit form.
 
 By default, `astcount` counts every node emitted in Tree-sitter's concrete syntax
 tree, including its root. It does not invent an `AST` category. Selection is a
