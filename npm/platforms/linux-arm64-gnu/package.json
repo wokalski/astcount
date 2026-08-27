@@ -1,0 +1,12 @@
+{
+  "name": "@wokalski/deslop-linux-arm64-gnu",
+  "version": "0.1.0",
+  "description": "Native deslop binary for Linux arm64 (glibc)",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["glibc"],
+  "files": ["bin/deslop"],
+  "repository": "git+https://github.com/wokalski/deslop.git",
+  "publishConfig": { "access": "public" }
+}

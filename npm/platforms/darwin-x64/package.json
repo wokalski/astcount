@@ -1,0 +1,11 @@
+{
+  "name": "@wokalski/deslop-darwin-x64",
+  "version": "0.1.0",
+  "description": "Native deslop binary for macOS Intel",
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["bin/deslop"],
+  "repository": "git+https://github.com/wokalski/deslop.git",
+  "publishConfig": { "access": "public" }
+}

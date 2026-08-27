@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TSLP_OFFLINE: "1"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform: linux-arm64-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: darwin-x64
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.1 --profile minimal --no-self-update
+      - name: Validate release version
+        shell: bash
+        run: node scripts/release.mjs check "${GITHUB_REF_NAME#v}"
+      - name: Build native binary
+        run: cargo +1.97.1 build --locked --release --target ${{ matrix.target }}
+      - name: Test and package binary
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/deslop"
+          "$binary" --version
+          node scripts/release.mjs stage "${{ matrix.platform }}" "$binary"
+          version="${GITHUB_REF_NAME#v}"
+          archive="deslop-v${version}-${{ matrix.target }}.tar.gz"
+          mkdir -p artifact bundle
+          cp "$binary" bundle/deslop
+          cp LICENSE README.md bundle/
+          tar -C bundle -czf "artifact/$archive" .
+          (cd artifact && shasum -a 256 "$archive" > "$archive.sha256")
+          cp "$binary" artifact/deslop
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.platform }}
+          path: artifact
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: artifacts
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          artifacts/binary-*/*.tar.gz
+          artifacts/binary-*/*.sha256
+          --repo "$GITHUB_REPOSITORY"
+          --verify-tag
+          --generate-notes
+
+  npm:
+    name: Publish npm packages
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: artifacts
+      - name: Stage native packages
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-arm64-gnu linux-x64-gnu; do
+            node scripts/release.mjs stage "$platform" "artifacts/binary-$platform/deslop"
+          done
+      - name: Publish platform packages, then launcher
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-arm64-gnu linux-x64-gnu; do
+            npm publish "./npm/platforms/$platform" --access public --provenance
+          done
+          npm publish ./npm/deslop --access public --provenance
