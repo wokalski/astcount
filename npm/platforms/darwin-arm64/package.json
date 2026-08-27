@@ -1,6 +1,6 @@
 {
   "name": "astcount-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Native astcount binary for macOS Apple Silicon",
   "license": "MIT",
   "os": ["darwin"],

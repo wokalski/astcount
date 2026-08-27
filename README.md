@@ -37,10 +37,11 @@ the flake.
 ```console
 astcount count src
 astcount count . --files
+astcount count . --files --stats
 astcount count . --threads 4
-astcount count . --require named
-astcount count . --require named --exclude extra
-astcount count . --require error
+astcount count . --exclude anonymous
+astcount count . --exclude anonymous,extra
+astcount count . --exclude extra,error,missing
 astcount count . --json
 astcount count . --save before.json
 astcount count . --save after.json
@@ -50,27 +51,27 @@ astcount compare before.json after.json --json
 
 Bare `astcount` defaults to `astcount count .`. For compatibility and quick
 interactive use, count options and paths may also omit the `count` subcommand,
-so `astcount src --require named` is equivalent to the explicit form.
+so `astcount src --exclude anonymous` is equivalent to the explicit form.
 
 By default, `astcount` counts every node emitted in Tree-sitter's concrete syntax
-tree, including its root. It does not invent an `AST` category. Selection is a
-conjunction of Tree-sitter's per-node boolean properties:
+tree, including its root. Remove node kinds or properties with repeatable or
+comma-separated `--exclude` values:
 
-- `--require named` counts nodes for which `is_named()` is true.
-- `--require anonymous` counts nodes for which `is_named()` is false; equivalently,
-  use `--exclude named`. `--exclude anonymous` is equivalent to `--require named`.
-- `--require extra` counts nodes for which `is_extra()` is true.
-- `--require error` counts `ERROR` nodes.
-- `--require missing` counts recovery tokens inserted by the parser.
-- `--exclude PROPERTY` requires that property to be false. For example,
-  `--require named --exclude extra` is the commonly used “named, non-extra”
-  approximation, but only when explicitly requested.
+- `--exclude anonymous` counts named nodes only.
+- `--exclude named` counts anonymous nodes only.
+- `--exclude extra` removes extra nodes such as comments.
+- `--exclude error` and `--exclude missing` remove parser-recovery nodes from the
+  selected count.
 
-Both flags may be repeated or comma-separated. With no predicates, the selected
-count is Tree-sitter's `descendant_count()` for the root. Properties overlap: an
-extra comment can also be named. JSON and saved reports always contain the
-selected count plus separate `total_nodes`, `named_nodes`, `extra_nodes`,
-`error_nodes`, and `missing_nodes` totals.
+Excluding both `named` and `anonymous` is rejected because it would remove every
+node. Properties overlap: an extra comment can also be named. Parser error and
+missing-node diagnostics remain raw and unfiltered even when those properties
+are excluded from the selected complexity count.
+
+Human output puts paths first and shows only the selected node count. `--stats`
+adds a final line with files, bytes, wall time, aggregate parse time, throughput,
+and raw parser diagnostics. JSON and saved schema-3 reports group selected and
+raw counts under `nodes`, with raw property counts under `nodes.by_property`.
 
 Tree-sitter also exposes each node's grammar-specific kind/name and id, source
 range, child counts, fields, parse states, and whether a node or subtree changed.
@@ -96,13 +97,13 @@ parallelism.
 ```console
 nix develop -c cargo test
 nix develop -c cargo clippy --all-targets -- -D warnings
-nix develop -c node scripts/release.mjs check 0.1.0
+nix develop -c node scripts/release.mjs check 0.2.0
 nix flake check
 ```
 
 The test suite includes exact golden counts for a pinned Rust grammar, covering
-total, named, extra, anonymous, error, and missing selections plus tree depth and
-byte totals. It runs offline as part of `nix flake check`.
+named, anonymous, extra, error, and missing exclusions plus tree depth and byte
+totals. It runs offline as part of `nix flake check`.
 
 `nix flake check` also packs the Nix-built executable as an npm platform
 package, installs the launcher and native package from their tarballs with

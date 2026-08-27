@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use astcount::{
-    FileMetrics, NodeProperty, NodeSelection, Report, count_source_with_parser,
-    detect_known_language, report,
+    FileMetrics, NodeFilter, NodeKind, Report, count_source_with_parser, detect_known_language,
+    report,
 };
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use ignore::WalkBuilder;
@@ -15,7 +16,7 @@ use tree_sitter::Parser as TsParser;
 use tree_sitter_language_pack::get_language;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum NodePredicateArg {
+enum NodeKindArg {
     Named,
     Anonymous,
     Extra,
@@ -23,14 +24,14 @@ enum NodePredicateArg {
     Missing,
 }
 
-impl NodePredicateArg {
-    const fn property(self) -> Option<NodeProperty> {
-        match self {
-            Self::Named => Some(NodeProperty::Named),
-            Self::Anonymous => None,
-            Self::Extra => Some(NodeProperty::Extra),
-            Self::Error => Some(NodeProperty::Error),
-            Self::Missing => Some(NodeProperty::Missing),
+impl From<NodeKindArg> for NodeKind {
+    fn from(value: NodeKindArg) -> Self {
+        match value {
+            NodeKindArg::Named => Self::Named,
+            NodeKindArg::Anonymous => Self::Anonymous,
+            NodeKindArg::Extra => Self::Extra,
+            NodeKindArg::Error => Self::Error,
+            NodeKindArg::Missing => Self::Missing,
         }
     }
 }
@@ -60,13 +61,9 @@ struct CountArgs {
     #[arg(default_value = ".")]
     paths: Vec<PathBuf>,
 
-    /// Require a Tree-sitter property (anonymous means not named)
+    /// Exclude node kinds or properties from the count
     #[arg(long, value_enum, value_delimiter = ',')]
-    require: Vec<NodePredicateArg>,
-
-    /// Exclude a Tree-sitter property (anonymous means not named)
-    #[arg(long, value_enum, value_delimiter = ',')]
-    exclude: Vec<NodePredicateArg>,
+    exclude: Vec<NodeKindArg>,
 
     /// Force one Tree-sitter language for every input file
     #[arg(short, long)]
@@ -79,6 +76,10 @@ struct CountArgs {
     /// Print one row per measured file
     #[arg(long)]
     files: bool,
+
+    /// Print file, byte, diagnostic, and timing statistics
+    #[arg(long, conflicts_with = "json")]
+    stats: bool,
 
     /// Save the complete JSON report to this path
     #[arg(long, value_name = "FILE")]
@@ -148,21 +149,13 @@ fn run() -> Result<()> {
 
 #[allow(clippy::too_many_lines)]
 fn run_count(args: &CountArgs) -> Result<()> {
-    let mut required = Vec::new();
-    let mut excluded_properties = Vec::new();
-    for predicate in &args.require {
-        match predicate.property() {
-            Some(property) => required.push(property),
-            None => excluded_properties.push(NodeProperty::Named),
-        }
-    }
-    for predicate in &args.exclude {
-        match predicate.property() {
-            Some(property) => excluded_properties.push(property),
-            None => required.push(NodeProperty::Named),
-        }
-    }
-    let selection = NodeSelection::new(&required, &excluded_properties)?;
+    let excluded = args
+        .exclude
+        .iter()
+        .copied()
+        .map(NodeKind::from)
+        .collect::<Vec<_>>();
+    let filter = NodeFilter::excluding(&excluded)?;
     let started = Instant::now();
     let builder = walk_builder(args)?;
     let current_dir = std::env::current_dir().context("get current directory")?;
@@ -175,7 +168,7 @@ fn run_count(args: &CountArgs) -> Result<()> {
     outcomes.extend(process_files(
         &work,
         args.language.as_deref(),
-        selection,
+        filter,
         args.threads,
     ));
 
@@ -201,7 +194,7 @@ fn run_count(args: &CountArgs) -> Result<()> {
         eprintln!("astcount: {prefix}{error:#}");
     }
 
-    let report = report(files, selection);
+    let report = report(files, filter);
     if report.files.is_empty() && !failures.is_empty() {
         bail!("no files could be measured");
     }
@@ -218,11 +211,18 @@ fn run_count(args: &CountArgs) -> Result<()> {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &report)?;
         println!();
     } else {
-        print_human(&report, started.elapsed(), parse_time, args.files);
+        print_human(
+            &report,
+            started.elapsed(),
+            parse_time,
+            args.files,
+            args.stats,
+        );
     }
 
     if args.fail_on_parse_error
-        && (report.totals.error_nodes > 0 || report.totals.missing_nodes > 0)
+        && (report.totals.nodes.by_property.error > 0
+            || report.totals.nodes.by_property.missing > 0)
     {
         std::process::exit(1);
     }
@@ -237,25 +237,23 @@ fn run_compare(args: &CompareArgs) -> Result<()> {
     let before = load_report(&args.before)?;
     let after = load_report(&args.after)?;
     let delta = difference(&after, &before)?;
-    let percent = percent_change(before.totals.nodes, delta);
+    let percent = percent_change(before.totals.nodes.selected, delta);
     if args.json {
         serde_json::to_writer_pretty(
             std::io::stdout().lock(),
             &serde_json::json!({
                 "schema": 1,
                 "parser_backend": after.parser_backend,
-                "selection": after.selection,
-                "before": { "path": args.before, "nodes": before.totals.nodes },
-                "after": { "path": args.after, "nodes": after.totals.nodes },
+                "filter": after.filter,
+                "before": { "path": args.before, "nodes": before.totals.nodes.selected },
+                "after": { "path": args.after, "nodes": after.totals.nodes.selected },
                 "delta_nodes": delta,
                 "percent_change": percent,
             }),
         )?;
         println!();
     } else {
-        println!("{:>12}  {}", before.totals.nodes, args.before.display());
-        println!("{:>12}  {}", after.totals.nodes, args.after.display());
-        print_change(delta, percent);
+        print_comparison(args, &before, &after, delta, percent);
     }
     if args.fail_on_increase && delta > 0 {
         std::process::exit(1);
@@ -320,7 +318,7 @@ fn discover_files(
 fn process_files(
     work: &[WorkItem],
     forced_language: Option<&str>,
-    selection: NodeSelection,
+    filter: NodeFilter,
     requested_workers: usize,
 ) -> Vec<Outcome> {
     if work.is_empty() {
@@ -351,7 +349,7 @@ fn process_files(
                     match process_path(
                         &item.path,
                         forced_language,
-                        selection,
+                        filter,
                         &mut parsers,
                         &mut source,
                     ) {
@@ -385,7 +383,7 @@ fn process_files(
 fn process_path(
     path: &Path,
     forced_language: Option<&str>,
-    selection: NodeSelection,
+    filter: NodeFilter,
     parsers: &mut HashMap<String, TsParser>,
     source: &mut Vec<u8>,
 ) -> Result<Option<astcount::TimedMetrics>> {
@@ -407,7 +405,7 @@ fn process_path(
             entry.insert(parser)
         }
     };
-    count_source_with_parser(path, language, source, selection, parser).map(Some)
+    count_source_with_parser(path, language, source, filter, parser).map(Some)
 }
 
 fn detect_shebang(path: &Path) -> std::io::Result<Option<&'static str>> {
@@ -441,20 +439,22 @@ fn load_report(path: &Path) -> Result<Report> {
     let report: Report =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
     ensure!(
-        report.schema == 2,
+        report.schema == 3,
         "unsupported report schema {} in {}",
         report.schema,
         path.display()
     );
+    NodeFilter::excluding(&report.filter.excluded)
+        .with_context(|| format!("invalid node filter in {}", path.display()))?;
     Ok(report)
 }
 
 fn difference(current: &Report, previous: &Report) -> Result<i128> {
     ensure!(
-        current.selection == previous.selection,
-        "cannot compare reports with different node selections: {:?} versus {:?}",
-        current.selection,
-        previous.selection
+        current.filter == previous.filter,
+        "cannot compare reports with different node filters: {:?} versus {:?}",
+        current.filter,
+        previous.filter
     );
     ensure!(
         current.parser_backend == previous.parser_backend,
@@ -462,43 +462,104 @@ fn difference(current: &Report, previous: &Report) -> Result<i128> {
         current.parser_backend,
         previous.parser_backend
     );
-    Ok(i128::from(current.totals.nodes) - i128::from(previous.totals.nodes))
+    Ok(i128::from(current.totals.nodes.selected) - i128::from(previous.totals.nodes.selected))
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn print_human(report: &Report, elapsed: Duration, parse_time: Duration, show_files: bool) {
+fn print_human(
+    report: &Report,
+    elapsed: Duration,
+    parse_time: Duration,
+    show_files: bool,
+    show_stats: bool,
+) {
+    print!(
+        "{}",
+        render_human(report, elapsed, parse_time, show_files, show_stats)
+    );
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn render_human(
+    report: &Report,
+    elapsed: Duration,
+    parse_time: Duration,
+    show_files: bool,
+    show_stats: bool,
+) -> String {
+    let mut output = String::new();
+    let paths = report
+        .files
+        .iter()
+        .filter(|_| show_files)
+        .map(|file| file.path.display().to_string())
+        .collect::<Vec<_>>();
+    let path_width = paths
+        .iter()
+        .map(|path| path.chars().count())
+        .chain(["path".len(), "total".len()])
+        .max()
+        .unwrap_or(5);
+    if !report.filter.excluded.is_empty() {
+        writeln!(
+            output,
+            "excluding: {}\n",
+            report
+                .filter
+                .excluded
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+        .expect("write to string");
+    }
+    let node_width = 12;
+    writeln!(output, "{:<path_width$}  {:>node_width$}", "path", "nodes").expect("write to string");
     if show_files {
-        println!(
-            "{:>12}  {:>12}  {:>8}  {:>8}  path",
-            "nodes", "all", "error", "missing"
-        );
-        for file in &report.files {
-            println!(
-                "{:>12}  {:>12}  {:>8}  {:>8}  {} [{}]",
-                file.nodes,
-                file.total_nodes,
-                file.error_nodes,
-                file.missing_nodes,
-                file.path.display(),
-                file.language
-            );
+        for (file, path) in report.files.iter().zip(paths) {
+            writeln!(
+                output,
+                "{path:<path_width$}  {:>node_width$}",
+                human_count(file.nodes.selected),
+            )
+            .expect("write to string");
         }
     }
-    println!(
-        "{:>12}  {:>12}  {:>8}  {:>8}  total ({} files, {}, {:.1} MiB/s)",
-        report.totals.nodes,
-        report.totals.total_nodes,
-        report.totals.error_nodes,
-        report.totals.missing_nodes,
-        report.totals.files,
-        human_bytes(report.totals.bytes),
-        throughput(report.totals.bytes, elapsed)
-    );
-    eprintln!(
-        "measured in {:.1} ms wall time ({:.1} ms aggregate parse time)",
-        elapsed.as_secs_f64() * 1_000.0,
-        parse_time.as_secs_f64() * 1_000.0
-    );
+    writeln!(
+        output,
+        "{:<path_width$}  {:>node_width$}",
+        "total",
+        human_count(report.totals.nodes.selected),
+    )
+    .expect("write to string");
+
+    let properties = &report.totals.nodes.by_property;
+    if show_stats {
+        writeln!(output).expect("write to string");
+        writeln!(
+            output,
+            "{} files · {} · {:.1} ms wall · {:.1} ms aggregate parse · {:.1} MiB/s · {} error nodes · {} missing nodes",
+            human_count(report.totals.files),
+            human_bytes(report.totals.bytes),
+            elapsed.as_secs_f64() * 1_000.0,
+            parse_time.as_secs_f64() * 1_000.0,
+            throughput(report.totals.bytes, elapsed),
+            human_count(properties.error),
+            human_count(properties.missing),
+        )
+        .expect("write to string");
+    } else if properties.error > 0 || properties.missing > 0 {
+        writeln!(output).expect("write to string");
+        writeln!(
+            output,
+            "parser diagnostics (unfiltered): {} error nodes · {} missing nodes",
+            human_count(properties.error),
+            human_count(properties.missing)
+        )
+        .expect("write to string");
+    }
+    output
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -506,11 +567,35 @@ fn percent_change(before: u64, delta: i128) -> Option<f64> {
     (before != 0).then(|| delta as f64 * 100.0 / before as f64)
 }
 
-fn print_change(delta: i128, percent: Option<f64>) {
-    match percent {
-        Some(percent) => println!("change: {delta:+} nodes ({percent:+.2}%)"),
-        None => println!("change: {delta:+} nodes (n/a)"),
-    }
+fn print_comparison(
+    args: &CompareArgs,
+    before: &Report,
+    after: &Report,
+    delta: i128,
+    percent: Option<f64>,
+) {
+    let before_path = args.before.display().to_string();
+    let after_path = args.after.display().to_string();
+    let path_width = before_path
+        .chars()
+        .count()
+        .max(after_path.chars().count())
+        .max("path".len())
+        .max("change".len());
+    println!("{:<path_width$}  {:>12}", "path", "nodes");
+    println!(
+        "{before_path:<path_width$}  {:>12}",
+        human_count(before.totals.nodes.selected)
+    );
+    println!(
+        "{after_path:<path_width$}  {:>12}",
+        human_count(after.totals.nodes.selected)
+    );
+    let change = match percent {
+        Some(percent) => format!("{delta:+} ({percent:+.2}%)"),
+        None => format!("{delta:+} (n/a)"),
+    };
+    println!("{:<path_width$}  {:>12}", "change", change);
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -526,5 +611,129 @@ fn human_bytes(bytes: u64) -> String {
         format!("{:.1} KiB", bytes as f64 / 1024.0)
     } else {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn human_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use astcount::{Filter, NodeCounts, PropertyCounts, Totals};
+
+    fn sample_report(error: u64, missing: u64) -> Report {
+        let files = vec![
+            FileMetrics {
+                path: PathBuf::from("src/lib.rs"),
+                language: "rust".to_owned(),
+                nodes: NodeCounts {
+                    selected: 1_234,
+                    total: 2_000,
+                    by_property: PropertyCounts::default(),
+                },
+                max_depth: 4,
+                bytes: 512 * 1024,
+            },
+            FileMetrics {
+                path: PathBuf::from("src/main.rs"),
+                language: "rust".to_owned(),
+                nodes: NodeCounts {
+                    selected: 98_765,
+                    total: 100_000,
+                    by_property: PropertyCounts::default(),
+                },
+                max_depth: 5,
+                bytes: 512 * 1024,
+            },
+        ];
+        Report {
+            schema: 3,
+            tool_version: "0.2.0".to_owned(),
+            parser_backend: "test".to_owned(),
+            filter: Filter {
+                excluded: vec![NodeKind::Anonymous, NodeKind::Extra],
+            },
+            totals: Totals {
+                files: 2,
+                bytes: 1024 * 1024,
+                nodes: NodeCounts {
+                    selected: 99_999,
+                    total: 102_000,
+                    by_property: PropertyCounts {
+                        error,
+                        missing,
+                        ..PropertyCounts::default()
+                    },
+                },
+            },
+            files,
+        }
+    }
+
+    #[test]
+    fn human_output_is_path_first_and_stats_are_opt_in() {
+        let report = sample_report(0, 0);
+        let plain = render_human(
+            &report,
+            Duration::from_millis(4),
+            Duration::from_millis(7),
+            true,
+            false,
+        );
+        let lines = plain.lines().collect::<Vec<_>>();
+        assert_eq!(lines[0], "excluding: anonymous,extra");
+        assert_eq!(
+            lines[2].split_whitespace().collect::<Vec<_>>(),
+            ["path", "nodes"]
+        );
+        assert!(lines[3].starts_with("src/lib.rs"));
+        assert!(lines[3].ends_with("1,234"));
+        assert!(lines[5].starts_with("total"));
+        assert!(lines[5].ends_with("99,999"));
+        assert!(!plain.contains("files ·"));
+        assert!(!plain.contains("wall"));
+
+        let with_stats = render_human(
+            &report,
+            Duration::from_millis(4),
+            Duration::from_millis(7),
+            true,
+            true,
+        );
+        assert!(with_stats.ends_with(
+            "2 files · 1.0 MiB · 4.0 ms wall · 7.0 ms aggregate parse · 250.0 MiB/s · 0 error nodes · 0 missing nodes\n"
+        ));
+    }
+
+    #[test]
+    fn raw_diagnostics_are_separate_from_the_filtered_count() {
+        let output = render_human(
+            &sample_report(3, 1),
+            Duration::from_millis(4),
+            Duration::from_millis(7),
+            false,
+            false,
+        );
+        let total = output
+            .lines()
+            .find(|line| line.starts_with("total"))
+            .expect("total row");
+        assert_eq!(
+            total.split_whitespace().collect::<Vec<_>>(),
+            ["total", "99,999"]
+        );
+        assert!(
+            output.ends_with("parser diagnostics (unfiltered): 3 error nodes · 1 missing nodes\n")
+        );
     }
 }

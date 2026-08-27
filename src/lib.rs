@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -13,85 +14,117 @@ static PROPERTIES_PARSER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
-pub enum NodeProperty {
+pub enum NodeKind {
     Named = 1 << 0,
-    Extra = 1 << 1,
-    Error = 1 << 2,
-    Missing = 1 << 3,
+    Anonymous = 1 << 1,
+    Extra = 1 << 2,
+    Error = 1 << 3,
+    Missing = 1 << 4,
 }
 
-impl NodeProperty {
+impl NodeKind {
     const fn mask(self) -> u8 {
         self as u8
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Named => "named",
+            Self::Anonymous => "anonymous",
+            Self::Extra => "extra",
+            Self::Error => "error",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+impl fmt::Display for NodeKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct NodeSelection {
-    require: u8,
-    exclude: u8,
+pub struct NodeFilter {
+    excluded: u8,
 }
 
-impl NodeSelection {
-    /// Build a conjunction of Tree-sitter node-property predicates.
+#[derive(Clone, Copy, Debug)]
+struct NodeTraits(u8);
+
+impl NodeFilter {
+    /// Build a filter that removes nodes matching any excluded kind.
     ///
     /// # Errors
     ///
-    /// Returns an error if the same property is both required and excluded.
-    pub fn new(require: &[NodeProperty], exclude: &[NodeProperty]) -> Result<Self> {
-        let mask = |properties: &[NodeProperty]| {
-            properties
-                .iter()
-                .fold(0, |mask, property| mask | property.mask())
-        };
-        let (require, exclude) = (mask(require), mask(exclude));
+    /// Returns an error when both named and anonymous nodes are excluded.
+    pub fn excluding(excluded: &[NodeKind]) -> Result<Self> {
+        let excluded = excluded.iter().fold(0, |mask, kind| mask | kind.mask());
         ensure!(
-            require & exclude == 0,
-            "a node property cannot be both required and excluded"
+            excluded & NodeKind::Named.mask() == 0 || excluded & NodeKind::Anonymous.mask() == 0,
+            "cannot exclude both named and anonymous nodes"
         );
-        Ok(Self { require, exclude })
+        Ok(Self { excluded })
     }
 
-    const fn matches(self, properties: u8) -> bool {
-        properties & self.require == self.require && properties & self.exclude == 0
+    const fn includes(self, traits: NodeTraits) -> bool {
+        !((traits.0 & NodeKind::Named.mask() != 0 && self.excluded & NodeKind::Named.mask() != 0)
+            || (traits.0 & NodeKind::Named.mask() == 0
+                && self.excluded & NodeKind::Anonymous.mask() != 0)
+            || (traits.0 & NodeKind::Extra.mask() != 0
+                && self.excluded & NodeKind::Extra.mask() != 0)
+            || (traits.0 & NodeKind::Error.mask() != 0
+                && self.excluded & NodeKind::Error.mask() != 0)
+            || (traits.0 & NodeKind::Missing.mask() != 0
+                && self.excluded & NodeKind::Missing.mask() != 0))
     }
 
-    fn properties(mask: u8) -> Vec<NodeProperty> {
+    fn kinds(self) -> Vec<NodeKind> {
         [
-            NodeProperty::Named,
-            NodeProperty::Extra,
-            NodeProperty::Error,
-            NodeProperty::Missing,
+            NodeKind::Named,
+            NodeKind::Anonymous,
+            NodeKind::Extra,
+            NodeKind::Error,
+            NodeKind::Missing,
         ]
         .into_iter()
-        .filter(|property| mask & property.mask() != 0)
+        .filter(|kind| self.excluded & kind.mask() != 0)
         .collect()
     }
 
-    fn report(self) -> Selection {
-        Selection {
-            require: Self::properties(self.require),
-            exclude: Self::properties(self.exclude),
+    fn report(self) -> Filter {
+        Filter {
+            excluded: self.kinds(),
         }
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Selection {
-    pub require: Vec<NodeProperty>,
-    pub exclude: Vec<NodeProperty>,
+pub struct Filter {
+    pub excluded: Vec<NodeKind>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PropertyCounts {
+    pub named: u64,
+    pub extra: u64,
+    pub error: u64,
+    pub missing: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NodeCounts {
+    pub selected: u64,
+    pub total: u64,
+    pub by_property: PropertyCounts,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FileMetrics {
     pub path: PathBuf,
     pub language: String,
-    pub nodes: u64,
-    pub total_nodes: u64,
-    pub named_nodes: u64,
-    pub extra_nodes: u64,
-    pub error_nodes: u64,
-    pub missing_nodes: u64,
+    pub nodes: NodeCounts,
     pub max_depth: u32,
     pub bytes: u64,
 }
@@ -99,13 +132,8 @@ pub struct FileMetrics {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Totals {
     pub files: u64,
-    pub nodes: u64,
-    pub total_nodes: u64,
-    pub named_nodes: u64,
-    pub extra_nodes: u64,
-    pub error_nodes: u64,
-    pub missing_nodes: u64,
     pub bytes: u64,
+    pub nodes: NodeCounts,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -113,7 +141,7 @@ pub struct Report {
     pub schema: u32,
     pub tool_version: String,
     pub parser_backend: String,
-    pub selection: Selection,
+    pub filter: Filter,
     pub totals: Totals,
     pub files: Vec<FileMetrics>,
 }
@@ -162,9 +190,9 @@ fn language_from_filename(path: &Path) -> Option<&'static str> {
 /// # Errors
 ///
 /// Returns an error when the file cannot be read or its parser cannot be loaded.
-pub fn count_file(path: &Path, language: &str, selection: NodeSelection) -> Result<TimedMetrics> {
+pub fn count_file(path: &Path, language: &str, filter: NodeFilter) -> Result<TimedMetrics> {
     let source = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    count_source(path, language, &source, selection)
+    count_source(path, language, &source, filter)
 }
 
 /// Load a parser and measure an in-memory source file.
@@ -176,14 +204,14 @@ pub fn count_source(
     path: &Path,
     language: &str,
     source: &[u8],
-    selection: NodeSelection,
+    filter: NodeFilter,
 ) -> Result<TimedMetrics> {
     let grammar = get_language(language).with_context(|| format!("load {language} parser"))?;
     let mut parser = Parser::new();
     parser
         .set_language(&grammar)
         .with_context(|| format!("configure {language} parser"))?;
-    count_source_with_parser(path, language, source, selection, &mut parser)
+    count_source_with_parser(path, language, source, filter, &mut parser)
 }
 
 /// Measure source using a previously loaded parser.
@@ -195,7 +223,7 @@ pub fn count_source_with_parser(
     path: &Path,
     language: &str,
     source: &[u8],
-    selection: NodeSelection,
+    filter: NodeFilter,
     parser: &mut Parser,
 ) -> Result<TimedMetrics> {
     let started = Instant::now();
@@ -226,11 +254,11 @@ pub fn count_source_with_parser(
         let is_extra = node.is_extra();
         let is_error = has_error && node.is_error();
         let is_missing = has_error && node.is_missing();
-        let properties = u8::from(is_named)
-            | (u8::from(is_extra) << 1)
-            | (u8::from(is_error) << 2)
-            | (u8::from(is_missing) << 3);
-        selected_nodes += u64::from(selection.matches(properties));
+        let traits = (u8::from(is_named) * NodeKind::Named.mask())
+            | (u8::from(is_extra) * NodeKind::Extra.mask())
+            | (u8::from(is_error) * NodeKind::Error.mask())
+            | (u8::from(is_missing) * NodeKind::Missing.mask());
+        selected_nodes += u64::from(filter.includes(NodeTraits(traits)));
         named_nodes += u64::from(is_named);
         extra_nodes += u64::from(is_extra);
         error_nodes += u64::from(is_error);
@@ -259,12 +287,16 @@ pub fn count_source_with_parser(
         metrics: FileMetrics {
             path: path.to_path_buf(),
             language: language.to_owned(),
-            nodes: selected_nodes,
-            total_nodes,
-            named_nodes,
-            extra_nodes,
-            error_nodes,
-            missing_nodes,
+            nodes: NodeCounts {
+                selected: selected_nodes,
+                total: total_nodes,
+                by_property: PropertyCounts {
+                    named: named_nodes,
+                    extra: extra_nodes,
+                    error: error_nodes,
+                    missing: missing_nodes,
+                },
+            },
             max_depth,
             bytes: source.len() as u64,
         },
@@ -273,24 +305,24 @@ pub fn count_source_with_parser(
 }
 
 #[must_use]
-pub fn report(mut files: Vec<FileMetrics>, selection: NodeSelection) -> Report {
+pub fn report(mut files: Vec<FileMetrics>, filter: NodeFilter) -> Report {
     files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     let totals = files.iter().fold(Totals::default(), |mut totals, file| {
         totals.files += 1;
-        totals.nodes += file.nodes;
-        totals.total_nodes += file.total_nodes;
-        totals.named_nodes += file.named_nodes;
-        totals.extra_nodes += file.extra_nodes;
-        totals.error_nodes += file.error_nodes;
-        totals.missing_nodes += file.missing_nodes;
+        totals.nodes.selected += file.nodes.selected;
+        totals.nodes.total += file.nodes.total;
+        totals.nodes.by_property.named += file.nodes.by_property.named;
+        totals.nodes.by_property.extra += file.nodes.by_property.extra;
+        totals.nodes.by_property.error += file.nodes.by_property.error;
+        totals.nodes.by_property.missing += file.nodes.by_property.missing;
         totals.bytes += file.bytes;
         totals
     });
     Report {
-        schema: 2,
+        schema: 3,
         tool_version: env!("CARGO_PKG_VERSION").to_owned(),
         parser_backend: "tree-sitter-language-pack/1.15.8".to_owned(),
-        selection: selection.report(),
+        filter: filter.report(),
         totals,
         files,
     }
@@ -302,54 +334,61 @@ mod tests {
 
     #[test]
     fn report_is_sorted_and_summed() {
-        let file = |path, nodes| FileMetrics {
+        let file = |path, selected| FileMetrics {
             path: PathBuf::from(path),
             language: "rust".to_owned(),
-            nodes,
-            total_nodes: nodes + 1,
-            named_nodes: nodes,
-            extra_nodes: 0,
-            error_nodes: 0,
-            missing_nodes: 0,
+            nodes: NodeCounts {
+                selected,
+                total: selected + 1,
+                by_property: PropertyCounts {
+                    named: selected,
+                    ..PropertyCounts::default()
+                },
+            },
             max_depth: 2,
             bytes: 10,
         };
-        let selection = NodeSelection::new(&[NodeProperty::Named], &[]).unwrap();
-        let result = report(vec![file("z.rs", 3), file("a.rs", 2)], selection);
+        let filter = NodeFilter::excluding(&[NodeKind::Anonymous]).unwrap();
+        let result = report(vec![file("z.rs", 3), file("a.rs", 2)], filter);
         assert_eq!(result.files[0].path, PathBuf::from("a.rs"));
-        assert_eq!(result.totals.nodes, 5);
+        assert_eq!(result.totals.nodes.selected, 5);
+        assert_eq!(result.totals.nodes.total, 7);
         assert_eq!(result.totals.files, 2);
         assert_eq!(result.totals.bytes, 20);
     }
 
     #[test]
-    fn report_json_exposes_selection_and_primitive_totals() {
-        let selection = NodeSelection::new(&[NodeProperty::Named], &[NodeProperty::Extra]).unwrap();
+    fn report_json_groups_filter_and_node_counts() {
+        let filter = NodeFilter::excluding(&[NodeKind::Anonymous, NodeKind::Extra]).unwrap();
         let result = report(
             vec![FileMetrics {
                 path: PathBuf::from("fixture.rs"),
                 language: "rust".to_owned(),
-                nodes: 8,
-                total_nodes: 18,
-                named_nodes: 9,
-                extra_nodes: 1,
-                error_nodes: 0,
-                missing_nodes: 0,
+                nodes: NodeCounts {
+                    selected: 8,
+                    total: 18,
+                    by_property: PropertyCounts {
+                        named: 9,
+                        extra: 1,
+                        error: 0,
+                        missing: 0,
+                    },
+                },
                 max_depth: 4,
                 bytes: 35,
             }],
-            selection,
+            filter,
         );
         let json = serde_json::to_value(result).expect("serialize report");
-        assert_eq!(json["schema"], 2);
-        assert_eq!(json["selection"]["require"][0], "named");
-        assert_eq!(json["selection"]["exclude"][0], "extra");
-        assert_eq!(json["totals"]["nodes"], 8);
-        assert_eq!(json["totals"]["total_nodes"], 18);
-        assert_eq!(json["totals"]["named_nodes"], 9);
-        assert_eq!(json["totals"]["extra_nodes"], 1);
-        assert_eq!(json["totals"]["error_nodes"], 0);
-        assert_eq!(json["totals"]["missing_nodes"], 0);
+        assert_eq!(json["schema"], 3);
+        assert_eq!(json["filter"]["excluded"][0], "anonymous");
+        assert_eq!(json["filter"]["excluded"][1], "extra");
+        assert_eq!(json["totals"]["nodes"]["selected"], 8);
+        assert_eq!(json["totals"]["nodes"]["total"], 18);
+        assert_eq!(json["totals"]["nodes"]["by_property"]["named"], 9);
+        assert_eq!(json["totals"]["nodes"]["by_property"]["extra"], 1);
+        assert_eq!(json["totals"]["nodes"]["by_property"]["error"], 0);
+        assert_eq!(json["totals"]["nodes"]["by_property"]["missing"], 0);
     }
 
     #[test]
@@ -420,34 +459,34 @@ mod tests {
             .expect("configure pinned Rust parser");
 
         for fixture in fixtures {
-            for (selection, nodes) in [
-                (NodeSelection::default(), fixture.total_nodes),
+            for (filter, selected) in [
+                (NodeFilter::default(), fixture.total_nodes),
                 (
-                    NodeSelection::new(&[NodeProperty::Named], &[]).unwrap(),
+                    NodeFilter::excluding(&[NodeKind::Anonymous]).unwrap(),
                     fixture.named_nodes,
                 ),
                 (
-                    NodeSelection::new(&[NodeProperty::Extra], &[]).unwrap(),
-                    fixture.extra_nodes,
-                ),
-                (
-                    NodeSelection::new(&[NodeProperty::Error], &[]).unwrap(),
-                    fixture.error_nodes,
-                ),
-                (
-                    NodeSelection::new(&[NodeProperty::Missing], &[]).unwrap(),
-                    fixture.missing_nodes,
-                ),
-                (
-                    NodeSelection::new(&[], &[NodeProperty::Named]).unwrap(),
+                    NodeFilter::excluding(&[NodeKind::Named]).unwrap(),
                     fixture.total_nodes - fixture.named_nodes,
+                ),
+                (
+                    NodeFilter::excluding(&[NodeKind::Extra]).unwrap(),
+                    fixture.total_nodes - fixture.extra_nodes,
+                ),
+                (
+                    NodeFilter::excluding(&[NodeKind::Error]).unwrap(),
+                    fixture.total_nodes - fixture.error_nodes,
+                ),
+                (
+                    NodeFilter::excluding(&[NodeKind::Missing]).unwrap(),
+                    fixture.total_nodes - fixture.missing_nodes,
                 ),
             ] {
                 let actual = count_source_with_parser(
                     Path::new("fixture.rs"),
                     "rust",
                     fixture.source,
-                    selection,
+                    filter,
                     &mut parser,
                 )
                 .expect("count pinned Rust fixture")
@@ -455,26 +494,26 @@ mod tests {
                 let expected = FileMetrics {
                     path: PathBuf::from("fixture.rs"),
                     language: "rust".to_owned(),
-                    nodes,
-                    total_nodes: fixture.total_nodes,
-                    named_nodes: fixture.named_nodes,
-                    extra_nodes: fixture.extra_nodes,
-                    error_nodes: fixture.error_nodes,
-                    missing_nodes: fixture.missing_nodes,
+                    nodes: NodeCounts {
+                        selected,
+                        total: fixture.total_nodes,
+                        by_property: PropertyCounts {
+                            named: fixture.named_nodes,
+                            extra: fixture.extra_nodes,
+                            error: fixture.error_nodes,
+                            missing: fixture.missing_nodes,
+                        },
+                    },
                     max_depth: fixture.max_depth,
                     bytes: fixture.source.len() as u64,
                 };
-                assert_eq!(
-                    actual, expected,
-                    "{} with selection {selection:?}",
-                    fixture.name
-                );
+                assert_eq!(actual, expected, "{} with filter {filter:?}", fixture.name);
             }
         }
     }
 
     #[test]
-    fn rejects_contradictory_selection() {
-        assert!(NodeSelection::new(&[NodeProperty::Extra], &[NodeProperty::Extra]).is_err());
+    fn rejects_excluding_every_namedness() {
+        assert!(NodeFilter::excluding(&[NodeKind::Named, NodeKind::Anonymous]).is_err());
     }
 }

@@ -4,8 +4,7 @@ Native npm distribution of [astcount](https://github.com/wokalski/astcount), a
 fast, polyglot Tree-sitter node counter.
 
 ```console
-npm install --global astcount
-astcount .
+bunx astcount .
 ```
 
 The package selects a platform-specific native binary at runtime. Linux glibc
