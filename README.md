@@ -2,19 +2,13 @@
 
 [![skills.sh](https://skills.sh/b/wokalski/astcount)](https://skills.sh/wokalski/astcount)
 
-`astcount` is a fast, polyglot syntax-tree node counter. It measures program size by
-parsing source files with Tree-sitter instead of counting physical lines.
-
-The motivation is simple: syntax-tree node count is a rough, objective proxy for
-program complexity, and it is harder to game than line or character count.
-Reformatting, removing blank lines, or shortening identifiers can dramatically
-change those textual metrics without simplifying the program, while leaving its
-syntax tree largely unchanged. `astcount` therefore works well as a directional
-benchmark for whether a refactor made code structurally simpler.
+`astcount` is a fast, polyglot Tree-sitter node counter. Node count is a rough
+complexity metric that ignores formatting churn, making it useful for measuring
+whether a refactor actually simplified the code.
 
 ## Agent usage
 
-Install both skills globally for Codex with the
+Install all three skills globally for Codex with the
 [skills.sh CLI](https://skills.sh/wokalski/astcount):
 
 ```console
@@ -25,30 +19,32 @@ Then open Codex in the repository you want to change and include the skill and
 task in the same prompt. These are Codex prompts, not shell commands:
 
 ```text
-$astcount-refactor Refactor this repository.
+$astcount-refactor-interactive Inspect this repository, propose refactors, and ask me about correctness and performance tradeoffs.
+$astcount-refactor-loop Refactor this repository autonomously until credible structural gains are exhausted.
 $astcount-verified-refactor-loop Refactor src deeply. Use `bun test` as the exact deterministic test command and keep digging until no credible structural improvement remains.
 ```
 
-[`astcount-refactor`](skills/astcount-refactor/SKILL.md) keeps digging through
-behavior-preserving refactors until credible structural gains are exhausted.
-[`astcount-verified-refactor-loop`](skills/astcount-verified-refactor-loop/SKILL.md)
-does the same behind a strict gate: every candidate must pass the user's exact
-deterministic test command and lower the named-node count before it is accepted.
-Both skills detect Nix users with `command -v nix`; otherwise they run the pinned
-release through Bun, with npx as a fallback.
+- [`astcount-refactor-interactive`](skills/astcount-refactor-interactive/SKILL.md)
+  asks before correctness, API, or performance tradeoffs.
+- [`astcount-refactor-loop`](skills/astcount-refactor-loop/SKILL.md) keeps
+  simplifying autonomously.
+- [`astcount-verified-refactor-loop`](skills/astcount-verified-refactor-loop/SKILL.md)
+  additionally gates every candidate with one exact test command.
+
+All three freeze the astcount policy before measuring and understand selectors,
+test exclusions, ast-grep patterns, and Tree-sitter queries.
 
 ### Try without installing
 
 `skills use` can instead download one skill and open a temporary Codex session:
 
 ```console
-bunx skills use wokalski/astcount@astcount-refactor --agent codex
+bunx skills use wokalski/astcount@astcount-refactor-interactive --agent codex
+bunx skills use wokalski/astcount@astcount-refactor-loop --agent codex
 bunx skills use wokalski/astcount@astcount-verified-refactor-loop --agent codex
 ```
 
-The new session starts with the selected skill loaded and then waits for the
-actual refactoring request. This is useful for a quick trial; installation is
-the smoother workflow for repeated use.
+The temporary session loads the skill, then waits for your refactoring request.
 
 ## Install
 
@@ -58,9 +54,8 @@ Run the native binary with Bun:
 bunx astcount .
 ```
 
-The registry package selects and downloads the matching native Rust binary
-without running a lifecycle script. Linux glibc on x64/arm64 and macOS on
-Intel/Apple Silicon are supported.
+The package downloads the matching native Rust binary without a lifecycle
+script. It supports Linux glibc and macOS on x64 and arm64.
 
 Run directly or install permanently with Nix, using the public Cachix cache:
 
@@ -68,9 +63,6 @@ Run directly or install permanently with Nix, using the public Cachix cache:
 nix run --extra-substituters https://astcount.cachix.org --extra-trusted-public-keys astcount.cachix.org-1:NgwAPl0WX9xB3qatDahUC8T0R9jcEuwOFhgdrwV/lk8= github:wokalski/astcount -- .
 nix profile install --extra-substituters https://astcount.cachix.org --extra-trusted-public-keys astcount.cachix.org-1:NgwAPl0WX9xB3qatDahUC8T0R9jcEuwOFhgdrwV/lk8= github:wokalski/astcount
 ```
-
-Building from source and Nix additionally remain available on every system in
-the flake.
 
 ## Usage
 
@@ -99,8 +91,7 @@ astcount count . --stream
 astcount count . --stream --json
 ```
 
-Parsing uses the machine's available parallelism automatically. Override the
-worker count when you need to reserve CPU or make completion order reproducible:
+Parsing is parallel by default. Override the worker count when needed:
 
 ```console
 astcount count . --threads 4
@@ -110,9 +101,72 @@ The default metric includes every Tree-sitter node. Exclude node kinds or
 properties to focus the measurement:
 
 ```console
-astcount count . --exclude anonymous
-astcount count . --exclude anonymous,extra
-astcount count . --exclude extra,error,missing
+astcount count . --exclude-kind anonymous
+astcount count . --exclude-kind anonymous,extra
+astcount count . --exclude-kind extra,error,missing
+```
+
+Discover the grammar-specific types in the final selected population with
+`--by-type`. The histogram is sorted from smallest to largest and includes the
+language plus whether each type is named or anonymous:
+
+```console
+astcount count src --exclude-kind anonymous --by-type
+```
+
+Select exact grammar types when measuring particular constructs:
+
+```console
+astcount count . --select-type rust=function_item
+astcount count . --select-type rust=let_declaration --select-type javascript=variable_declarator
+```
+
+Ast-grep selectors are friendlier when a source-shaped construct is easier to
+describe than its grammar type. Each complete match contributes its root node,
+not the entire subtree:
+
+```console
+astcount count . --select-pattern 'rust=let $NAME = $VALUE;'
+astcount count . --select-pattern 'javascript=const $NAME = $VALUE'
+```
+
+Tree-sitter selector queries are the precise alternative. Nodes captured as
+`@select` enter the selected population; larger queries can live in files:
+
+```console
+astcount count . --select-query 'rust=(identifier) @select'
+astcount count . --select-query-file rust=queries/public-functions.scm
+```
+
+Exclude entire files with repeatable globs. Globs are relative to the current
+directory; a pattern without `/` matches that basename at any depth:
+
+```console
+astcount count . --exclude-file 'tests/**'
+astcount count . --exclude-file '*.test.*' --exclude-file '*.spec.*'
+```
+
+Use the built-in module-test preset to remove conventional in-source tests from
+Rust, OCaml, JavaScript, and TypeScript counts:
+
+```console
+astcount count . --exclude-preset module-tests
+```
+
+For project-specific syntax, ast-grep code patterns are the concise option.
+Prefix each pattern with its Tree-sitter language name:
+
+```console
+astcount count . --exclude-pattern 'rust=mod $NAME { $$$BODY }'
+astcount count . --exclude-pattern 'javascript=describe($NAME, $CALLBACK)'
+```
+
+Tree-sitter queries provide the precise escape hatch. Every subtree captured as
+`@exclude` is omitted. Put larger queries in a file to avoid shell quoting:
+
+```console
+astcount count . --exclude-query 'rust=(function_item) @exclude'
+astcount count . --exclude-query-file rust=queries/generated-code.scm
 ```
 
 Use JSON for automation, or save two complete reports and compare them. The
@@ -128,68 +182,42 @@ astcount compare before.json after.json --json
 
 Bare `astcount` defaults to `astcount count .`. For compatibility and quick
 interactive use, count options and paths may also omit the `count` subcommand,
-so `astcount src --exclude anonymous` is equivalent to the explicit form.
+so `astcount src --exclude-kind anonymous` is equivalent to the explicit form.
+Language is detected from filenames, extensions, and shebangs; use
+`--language rust` when detection is ambiguous. Directory walks respect ignore
+files such as `.gitignore`.
 
-By default, `astcount` counts every node emitted in Tree-sitter's concrete syntax
-tree, including its root. Remove node kinds or properties with repeatable or
-comma-separated `--exclude` values:
+### Rules worth knowing
 
-- `--exclude anonymous` counts named nodes only.
-- `--exclude named` counts anonymous nodes only.
-- `--exclude extra` removes extra nodes such as comments.
-- `--exclude error` and `--exclude missing` remove parser-recovery nodes from the
-  selected count.
+- Any selector enables selection mode. Selectors are ORed, overlaps count once,
+  and languages without a matching selector contribute zero.
+- `--select-type` uses exact, grammar-specific names. Unknown types are rejected;
+  use `--by-type` to discover them.
+- Ast-grep selectors count match roots. Tree-sitter selector queries capture
+  nodes as `@select`.
+- Exclusions apply after selection. Ast-grep matches and Tree-sitter captures
+  named `@exclude` remove complete subtrees.
+- `--exclude-kind anonymous` means named nodes only. Named and anonymous cannot
+  both be excluded; parser diagnostics remain raw.
+- `module-tests` covers Rust `#[cfg(test)] mod`, OCaml inline-test forms, and
+  JavaScript/TypeScript/TSX `if (import.meta.vitest)` blocks. Use file globs for
+  ordinary test files.
 
-Excluding both `named` and `anonymous` is rejected because it would remove every
-node. Properties overlap: an extra comment can also be named. Parser error and
-missing-node diagnostics remain raw and unfiltered even when those properties
-are excluded from the selected complexity count.
-
-Human output puts paths first and shows only the selected node count. With
-`--files`, rows are buffered and sorted from smallest to largest by that count;
-`--stream` instead emits them in parser-completion order. `--stats` adds a final
-line with files, bytes, wall time, aggregate parse time, throughput, and raw
-parser diagnostics. JSON and saved schema-3 reports group selected and raw
-counts under `nodes`, with raw property counts under `nodes.by_property`.
-`--stream --json` switches stdout to JSONL: zero or more `file` events followed
-by one `summary` event.
-
-Tree-sitter also exposes each node's grammar-specific kind/name and id, source
-range, child counts, fields, parse states, and whether a node or subtree changed.
-Those are useful for inspection and queries, but they are not universal node
-classes, so `astcount` does not silently turn them into complexity categories.
-Whitespace usually is not represented as a node at all; “all” means all emitted
-tree nodes, not all source tokens or bytes.
-
-Language detection uses filenames, extensions, and shebangs. The language pack
-is pinned at version 1.15.8 and knows 371 Tree-sitter grammars. It downloads a
-platform parser bundle on first use, then reuses it from the local cache. Use
-`--language rust` (or another pack language name) when detection is ambiguous.
-
-Directories are walked recursively and respect hidden-file and ignore rules by
-default, including `.gitignore`. Multiple file and directory arguments are
-accepted, so shell globs work naturally. Parsing is parallel; files are queued
-largest-first to keep oversized generated or minified sources from becoming a
-single-worker tail. `--threads 0` (the default) uses the machine's available
-parallelism.
+Tree-sitter types are language-specific, and whitespace usually is not a node.
+“All” means all emitted tree nodes, not all tokens or bytes. Saved reports record
+the complete selector/exclusion policy, and `compare` rejects incompatible
+reports. Schema-3 reports remain readable.
 
 ## Development
 
 ```console
 nix develop -c cargo test
 nix develop -c cargo clippy --all-targets -- -D warnings
-nix develop -c node scripts/release.mjs check 0.2.0
+nix develop -c node scripts/release.mjs check 0.3.0
 nix flake check
 ```
 
-The test suite includes exact golden counts for a pinned Rust grammar, covering
-named, anonymous, extra, error, and missing exclusions plus tree depth and byte
-totals. It runs offline as part of `nix flake check`.
-
-`nix flake check` also packs the Nix-built executable as an npm platform
-package, installs the launcher and native package from their tarballs with
-lifecycle scripts disabled, and invokes the installed command. Release
-automation and public-cache setup are documented in
+Release automation and public-cache setup are in
 [`RELEASING.md`](RELEASING.md).
 
 ## What the number means

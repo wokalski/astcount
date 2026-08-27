@@ -1,6 +1,6 @@
 [package]
 name = "astcount"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A fast, polyglot Tree-sitter node counter"
 license = "MIT"
@@ -8,7 +8,9 @@ repository = "https://github.com/wokalski/astcount"
 
 [dependencies]
 anyhow = "1.0.100"
+ast-grep-core = "=0.45.2"
 clap = { version = "4.5.48", features = ["derive"] }
+globset = "0.4.16"
 ignore = "0.4.23"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -16,7 +18,10 @@ tree-sitter-language-pack = "=1.15.8"
 tree-sitter = "=0.26.13"
 
 [dev-dependencies]
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-ocaml = "=0.25.0"
 tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
 
 [profile.release]
 codegen-units = 1

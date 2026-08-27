@@ -4,7 +4,7 @@ Versions in `Cargo.toml` and all five npm manifests must match. Validate them
 with:
 
 ```console
-nix develop -c node scripts/release.mjs check 0.2.0
+nix develop -c node scripts/release.mjs check 0.3.0
 ```
 
 ## npm and GitHub releases
@@ -20,8 +20,8 @@ revoked immediately after bootstrapping rather than kept in GitHub Actions.
 Push an annotated version tag matching `Cargo.toml`:
 
 ```console
-git tag -a v0.2.0 -m 'astcount 0.2.0'
-git push origin v0.2.0
+git tag -a v0.3.0 -m 'astcount 0.3.0'
+git push origin v0.3.0
 ```
 
 The release workflow builds and smoke-tests Linux x64/arm64 and macOS

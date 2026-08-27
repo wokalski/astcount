@@ -18,8 +18,18 @@ fn help_describes_the_metric() {
         .expect("run astcount count --help");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("utf8 help");
-    assert!(stdout.contains("--exclude"));
+    assert!(stdout.contains("--select-type"));
+    assert!(stdout.contains("--select-query"));
+    assert!(stdout.contains("--select-query-file"));
+    assert!(stdout.contains("--select-pattern"));
+    assert!(stdout.contains("--exclude-kind"));
+    assert!(stdout.contains("--exclude-file"));
+    assert!(stdout.contains("--exclude-query"));
+    assert!(stdout.contains("--exclude-query-file"));
+    assert!(stdout.contains("--exclude-pattern"));
+    assert!(stdout.contains("--exclude-preset"));
     assert!(stdout.contains("--stats"));
+    assert!(stdout.contains("--by-type"));
     assert!(stdout.contains("--stream"));
     assert!(stdout.contains("named, anonymous, extra, error, missing"));
     assert!(!stdout.contains("--require"));
@@ -70,7 +80,7 @@ fn rejects_contradictory_exclusions_and_stats_with_json() {
         .args([
             "count",
             "this-path-is-never-read",
-            "--exclude",
+            "--exclude-kind",
             "named,anonymous",
         ])
         .output()

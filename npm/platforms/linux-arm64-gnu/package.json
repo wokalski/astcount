@@ -1,6 +1,6 @@
 {
   "name": "astcount-linux-arm64-gnu",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Native astcount binary for Linux arm64 (glibc)",
   "license": "MIT",
   "os": ["linux"],

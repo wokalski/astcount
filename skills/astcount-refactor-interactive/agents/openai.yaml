@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interactive astcount Refactor"
+  short_description: "Choose correctness and performance tradeoffs together"
+  default_prompt: "Use $astcount-refactor-interactive to inspect this codebase, present structural refactor options, and actively ask me about correctness and performance tradeoffs."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "astcount Refactor Loop"
+  short_description: "Autonomously simplify until gains are exhausted"
+  default_prompt: "Use $astcount-refactor-loop to keep finding and verifying behavior-preserving structural simplifications until credible gains are exhausted."

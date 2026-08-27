@@ -1,4 +1,0 @@
-interface:
-  display_name: "Deep astcount Refactor"
-  short_description: "Keep simplifying until structural gains are exhausted"
-  default_prompt: "Use $astcount-refactor to deeply refactor this codebase, keep finding behavior-preserving simplifications, and verify every astcount improvement."

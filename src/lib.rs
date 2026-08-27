@@ -1,15 +1,24 @@
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, ensure};
+use ast_grep_core::AstGrep;
+use ast_grep_core::language::Language as AstGrepLanguage;
+use ast_grep_core::matcher::{Pattern, PatternBuilder, PatternError};
+use ast_grep_core::tree_sitter::{LanguageExt as AstGrepLanguageExt, StrDoc};
 use serde::{Deserialize, Serialize};
-use tree_sitter::Parser;
+use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
 use tree_sitter_language_pack::{
     detect_language_from_content, detect_language_from_path, get_language,
 };
 
 static PROPERTIES_PARSER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub const REPORT_SCHEMA: u32 = 4;
+pub const AST_GREP_BACKEND: &str = "ast-grep-core/0.45.2";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[repr(u8)]
@@ -96,13 +105,351 @@ impl NodeFilter {
     fn report(self) -> Filter {
         Filter {
             excluded: self.kinds(),
+            ..Filter::default()
         }
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct LanguageFilter {
+    pub language: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct LanguageNodeType {
+    pub language: String,
+
+    #[serde(rename = "type")]
+    pub node_type: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Filter {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_types: Vec<LanguageNodeType>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tree_sitter_selectors: Vec<LanguageFilter>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ast_grep_selectors: Vec<LanguageFilter>,
+
+    #[serde(default)]
     pub excluded: Vec<NodeKind>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_files: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tree_sitter_queries: Vec<LanguageFilter>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ast_grep_patterns: Vec<LanguageFilter>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ast_grep_backend: Option<String>,
+}
+
+impl Filter {
+    /// Build the executable node-kind filter recorded in this report filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when both named and anonymous nodes are excluded.
+    pub fn node_filter(&self) -> Result<NodeFilter> {
+        NodeFilter::excluding(&self.excluded)
+    }
+
+    #[must_use]
+    pub fn has_selectors(&self) -> bool {
+        !self.selected_types.is_empty()
+            || !self.tree_sitter_selectors.is_empty()
+            || !self.ast_grep_selectors.is_empty()
+    }
+}
+
+#[derive(Default)]
+struct MatchedNodeIds {
+    selected: HashSet<usize>,
+    excluded: HashSet<usize>,
+}
+
+/// Language-specific selectors and exclusions compiled for one parser.
+#[derive(Default)]
+pub struct CompiledFilters {
+    selection_active: bool,
+    selected_types: HashSet<String>,
+    selector_queries: Vec<Query>,
+    exclusion_queries: Vec<Query>,
+    selector_patterns: Vec<Pattern>,
+    exclusion_patterns: Vec<Pattern>,
+    ast_grep_language: Option<PatternLanguage>,
+}
+
+impl CompiledFilters {
+    /// Compile every filter that targets `language` against its exact grammar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid Tree-sitter query, a query without its
+    /// required capture, or an invalid ast-grep pattern.
+    pub fn compile(language: &str, grammar: &Language, filter: &Filter) -> Result<Self> {
+        let selector_queries =
+            compile_queries(language, grammar, &filter.tree_sitter_selectors, "select")?;
+        let exclusion_queries =
+            compile_queries(language, grammar, &filter.tree_sitter_queries, "exclude")?;
+        let selector_pattern_sources = filter
+            .ast_grep_selectors
+            .iter()
+            .filter(|pattern| pattern.language.eq_ignore_ascii_case(language))
+            .collect::<Vec<_>>();
+        let exclusion_pattern_sources = filter
+            .ast_grep_patterns
+            .iter()
+            .filter(|pattern| pattern.language.eq_ignore_ascii_case(language))
+            .collect::<Vec<_>>();
+        let ast_grep_language = (!selector_pattern_sources.is_empty()
+            || !exclusion_pattern_sources.is_empty())
+        .then(|| PatternLanguage {
+            grammar: grammar.clone(),
+            expando: ast_grep_expando(language),
+        });
+        let mut selector_patterns = Vec::with_capacity(selector_pattern_sources.len());
+        let mut exclusion_patterns = Vec::with_capacity(exclusion_pattern_sources.len());
+        if let Some(ast_language) = &ast_grep_language {
+            for pattern_source in selector_pattern_sources {
+                selector_patterns.push(
+                    Pattern::try_new(&pattern_source.source, ast_language.clone()).with_context(
+                        || {
+                            format!(
+                                "compile ast-grep selector pattern for {}",
+                                pattern_source.language
+                            )
+                        },
+                    )?,
+                );
+            }
+            for pattern_source in exclusion_pattern_sources {
+                exclusion_patterns.push(
+                    Pattern::try_new(&pattern_source.source, ast_language.clone()).with_context(
+                        || {
+                            format!(
+                                "compile ast-grep exclusion pattern for {}",
+                                pattern_source.language
+                            )
+                        },
+                    )?,
+                );
+            }
+        }
+
+        let selected_types = filter
+            .selected_types
+            .iter()
+            .filter(|selected| selected.language.eq_ignore_ascii_case(language))
+            .map(|selected| selected.node_type.clone())
+            .collect::<HashSet<_>>();
+        for node_type in &selected_types {
+            ensure!(
+                (0..grammar.node_kind_count()).any(|id| {
+                    u16::try_from(id)
+                        .ok()
+                        .and_then(|id| grammar.node_kind_for_id(id))
+                        .is_some_and(|kind| kind == node_type)
+                }),
+                "unknown Tree-sitter node type {node_type:?} for {language}"
+            );
+        }
+
+        Ok(Self {
+            selection_active: filter.has_selectors(),
+            selected_types,
+            selector_queries,
+            exclusion_queries,
+            selector_patterns,
+            exclusion_patterns,
+            ast_grep_language,
+        })
+    }
+
+    fn matched_node_ids(&self, tree: &Tree, source: &[u8]) -> Result<MatchedNodeIds> {
+        let mut matched = MatchedNodeIds::default();
+        capture_node_ids(
+            &self.selector_queries,
+            "select",
+            tree,
+            source,
+            &mut matched.selected,
+        )?;
+        capture_node_ids(
+            &self.exclusion_queries,
+            "exclude",
+            tree,
+            source,
+            &mut matched.excluded,
+        )?;
+
+        if self.selector_patterns.is_empty() && self.exclusion_patterns.is_empty() {
+            return Ok(matched);
+        }
+
+        if let Some(language) = &self.ast_grep_language {
+            let source = std::str::from_utf8(source)
+                .context("ast-grep patterns require UTF-8 source text")?;
+            let document = StrDoc {
+                src: source.to_owned(),
+                lang: language.clone(),
+                tree: tree.clone(),
+            };
+            let ast = AstGrep::doc(document);
+            let root = ast.root();
+            for pattern in &self.selector_patterns {
+                for selected in root.find_all(pattern.clone()) {
+                    matched.selected.insert(selected.get_node().node_id());
+                }
+            }
+            for pattern in &self.exclusion_patterns {
+                for excluded in root.find_all(pattern.clone()) {
+                    matched.excluded.insert(excluded.get_node().node_id());
+                }
+            }
+        }
+        Ok(matched)
+    }
+
+    fn selects(&self, node_type: &str, node_id: usize, matched: &MatchedNodeIds) -> bool {
+        !self.selection_active
+            || self.selected_types.contains(node_type)
+            || matched.selected.contains(&node_id)
+    }
+}
+
+fn compile_queries(
+    language: &str,
+    grammar: &Language,
+    sources: &[LanguageFilter],
+    capture_name: &str,
+) -> Result<Vec<Query>> {
+    let mut queries = Vec::new();
+    for source in sources
+        .iter()
+        .filter(|source| source.language.eq_ignore_ascii_case(language))
+    {
+        let query = Query::new(grammar, &source.source)
+            .with_context(|| format!("compile Tree-sitter query for {}", source.language))?;
+        let target = if capture_name == "select" {
+            "selected nodes"
+        } else {
+            "excluded subtree roots"
+        };
+        ensure!(
+            query.capture_names().contains(&capture_name),
+            "Tree-sitter query for {} must capture {target} as @{capture_name}",
+            source.language,
+        );
+        queries.push(query);
+    }
+    Ok(queries)
+}
+
+fn capture_node_ids(
+    queries: &[Query],
+    capture_name: &str,
+    tree: &Tree,
+    source: &[u8],
+    node_ids: &mut HashSet<usize>,
+) -> Result<()> {
+    for query in queries {
+        let wanted_capture = query
+            .capture_index_for_name(capture_name)
+            .expect("validated query capture");
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(query, tree.root_node(), source);
+        while let Some((query_match, capture_index)) = captures.next() {
+            let capture = query_match.captures[*capture_index];
+            if capture.index == wanted_capture {
+                node_ids.insert(capture.node.id());
+            }
+        }
+        ensure!(
+            !cursor.did_exceed_match_limit(),
+            "Tree-sitter query exceeded its match limit"
+        );
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct PatternLanguage {
+    grammar: Language,
+    expando: char,
+}
+
+impl AstGrepLanguage for PatternLanguage {
+    fn kind_to_id(&self, kind: &str) -> u16 {
+        self.grammar.id_for_node_kind(kind, true)
+    }
+
+    fn field_to_id(&self, field: &str) -> Option<u16> {
+        self.grammar.field_id_for_name(field).map(Into::into)
+    }
+
+    fn expando_char(&self) -> char {
+        self.expando
+    }
+
+    fn pre_process_pattern<'query>(&self, query: &'query str) -> Cow<'query, str> {
+        preprocess_ast_grep_pattern(self.expando, query)
+    }
+
+    fn build_pattern(&self, builder: &PatternBuilder) -> Result<Pattern, PatternError> {
+        builder.build(|source| StrDoc::try_new(source, self.clone()))
+    }
+}
+
+impl AstGrepLanguageExt for PatternLanguage {
+    fn get_ts_language(&self) -> Language {
+        self.grammar.clone()
+    }
+}
+
+fn preprocess_ast_grep_pattern(expando: char, query: &str) -> Cow<'_, str> {
+    if expando == '$' {
+        return Cow::Borrowed(query);
+    }
+    let mut output = String::with_capacity(query.len());
+    let mut dollars = 0;
+    for character in query.chars() {
+        if character == '$' {
+            dollars += 1;
+            continue;
+        }
+        let replacement = if matches!(character, 'A'..='Z' | '_') || dollars == 3 {
+            expando
+        } else {
+            '$'
+        };
+        output.extend(std::iter::repeat_n(replacement, dollars));
+        dollars = 0;
+        output.push(character);
+    }
+    let replacement = if dollars == 3 { expando } else { '$' };
+    output.extend(std::iter::repeat_n(replacement, dollars));
+    Cow::Owned(output)
+}
+
+fn ast_grep_expando(language: &str) -> char {
+    match language.to_ascii_lowercase().as_str() {
+        "c" | "cpp" => '𐀀',
+        "c_sharp" | "csharp" | "css" | "elixir" | "go" | "haskell" | "hcl" | "kotlin" | "ocaml"
+        | "php" | "python" | "ruby" | "rust" | "swift" => 'µ',
+        "nix" => '_',
+        _ => '$',
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -113,11 +460,25 @@ pub struct PropertyCounts {
     pub missing: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NodeTypeCount {
+    pub language: String,
+
+    #[serde(rename = "type")]
+    pub node_type: String,
+
+    pub named: bool,
+    pub count: u64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NodeCounts {
     pub selected: u64,
     pub total: u64,
     pub by_property: PropertyCounts,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_type: Vec<NodeTypeCount>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -226,6 +587,32 @@ pub fn count_source_with_parser(
     filter: NodeFilter,
     parser: &mut Parser,
 ) -> Result<TimedMetrics> {
+    count_source_with_filters(
+        path,
+        language,
+        source,
+        filter,
+        &CompiledFilters::default(),
+        false,
+        parser,
+    )
+}
+
+/// Measure source using a parser and precompiled selectors and exclusions.
+///
+/// # Errors
+///
+/// Returns an error when parsing is cancelled or a structural matcher cannot
+/// process the source.
+pub fn count_source_with_filters(
+    path: &Path,
+    language: &str,
+    source: &[u8],
+    filter: NodeFilter,
+    filters: &CompiledFilters,
+    collect_by_type: bool,
+    parser: &mut Parser,
+) -> Result<TimedMetrics> {
     let started = Instant::now();
     let _scanner_guard = (language == "properties").then(|| {
         PROPERTIES_PARSER_LOCK
@@ -235,6 +622,7 @@ pub fn count_source_with_parser(
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| anyhow!("{language} parser cancelled"))?;
+    let matched = filters.matched_node_ids(&tree, source)?;
 
     let root = tree.root_node();
     let mut cursor = root.walk();
@@ -246,10 +634,18 @@ pub fn count_source_with_parser(
     let mut selected_nodes = 0_u64;
     let mut depth = 0_u32;
     let mut max_depth = 0_u32;
+    let mut excluded_root_depth = None;
+    let mut by_type = BTreeMap::<(String, bool), u64>::new();
     let has_error = root.has_error();
 
     'walk: loop {
         let node = cursor.node();
+        if excluded_root_depth.is_some_and(|excluded_depth| depth <= excluded_depth) {
+            excluded_root_depth = None;
+        }
+        if excluded_root_depth.is_none() && matched.excluded.contains(&node.id()) {
+            excluded_root_depth = Some(depth);
+        }
         let is_named = node.is_named();
         let is_extra = node.is_extra();
         let is_error = has_error && node.is_error();
@@ -258,7 +654,15 @@ pub fn count_source_with_parser(
             | (u8::from(is_extra) * NodeKind::Extra.mask())
             | (u8::from(is_error) * NodeKind::Error.mask())
             | (u8::from(is_missing) * NodeKind::Missing.mask());
-        selected_nodes += u64::from(filter.includes(NodeTraits(traits)));
+        let selected = excluded_root_depth.is_none()
+            && filters.selects(node.kind(), node.id(), &matched)
+            && filter.includes(NodeTraits(traits));
+        selected_nodes += u64::from(selected);
+        if collect_by_type && selected {
+            *by_type
+                .entry((node.kind().to_owned(), is_named))
+                .or_default() += 1;
+        }
         named_nodes += u64::from(is_named);
         extra_nodes += u64::from(is_extra);
         error_nodes += u64::from(is_error);
@@ -296,6 +700,15 @@ pub fn count_source_with_parser(
                     error: error_nodes,
                     missing: missing_nodes,
                 },
+                by_type: by_type
+                    .into_iter()
+                    .map(|((node_type, named), count)| NodeTypeCount {
+                        language: language.to_owned(),
+                        node_type,
+                        named,
+                        count,
+                    })
+                    .collect(),
             },
             max_depth,
             bytes: source.len() as u64,
@@ -305,9 +718,16 @@ pub fn count_source_with_parser(
 }
 
 #[must_use]
-pub fn report(mut files: Vec<FileMetrics>, filter: NodeFilter) -> Report {
+pub fn report(files: Vec<FileMetrics>, filter: NodeFilter) -> Report {
+    report_with_filter(files, filter.report())
+}
+
+#[must_use]
+pub fn report_with_filter(mut files: Vec<FileMetrics>, filter: Filter) -> Report {
     files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
-    let totals = files.iter().fold(Totals::default(), |mut totals, file| {
+    let mut totals = Totals::default();
+    let mut by_type = BTreeMap::<(String, String, bool), u64>::new();
+    for file in &files {
         totals.files += 1;
         totals.nodes.selected += file.nodes.selected;
         totals.nodes.total += file.nodes.total;
@@ -316,13 +736,30 @@ pub fn report(mut files: Vec<FileMetrics>, filter: NodeFilter) -> Report {
         totals.nodes.by_property.error += file.nodes.by_property.error;
         totals.nodes.by_property.missing += file.nodes.by_property.missing;
         totals.bytes += file.bytes;
-        totals
-    });
+        for node_type in &file.nodes.by_type {
+            *by_type
+                .entry((
+                    node_type.language.clone(),
+                    node_type.node_type.clone(),
+                    node_type.named,
+                ))
+                .or_default() += node_type.count;
+        }
+    }
+    totals.nodes.by_type = by_type
+        .into_iter()
+        .map(|((language, node_type, named), count)| NodeTypeCount {
+            language,
+            node_type,
+            named,
+            count,
+        })
+        .collect();
     Report {
-        schema: 3,
+        schema: REPORT_SCHEMA,
         tool_version: env!("CARGO_PKG_VERSION").to_owned(),
         parser_backend: "tree-sitter-language-pack/1.15.8".to_owned(),
-        filter: filter.report(),
+        filter,
         totals,
         files,
     }
@@ -331,6 +768,27 @@ pub fn report(mut files: Vec<FileMetrics>, filter: NodeFilter) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn count_rust_with_filter(source: &str, filter: &Filter, collect_by_type: bool) -> FileMetrics {
+        let grammar: Language = tree_sitter_rust::LANGUAGE.into();
+        let compiled =
+            CompiledFilters::compile("rust", &grammar, filter).expect("compile Rust filters");
+        let mut parser = Parser::new();
+        parser
+            .set_language(&grammar)
+            .expect("configure Rust parser");
+        count_source_with_filters(
+            Path::new("fixture.rs"),
+            "rust",
+            source.as_bytes(),
+            filter.node_filter().expect("valid node filter"),
+            &compiled,
+            collect_by_type,
+            &mut parser,
+        )
+        .expect("count Rust fixture")
+        .metrics
+    }
 
     #[test]
     fn report_is_sorted_and_summed() {
@@ -344,6 +802,7 @@ mod tests {
                     named: selected,
                     ..PropertyCounts::default()
                 },
+                by_type: Vec::new(),
             },
             max_depth: 2,
             bytes: 10,
@@ -373,6 +832,7 @@ mod tests {
                         error: 0,
                         missing: 0,
                     },
+                    by_type: Vec::new(),
                 },
                 max_depth: 4,
                 bytes: 35,
@@ -380,7 +840,7 @@ mod tests {
             filter,
         );
         let json = serde_json::to_value(result).expect("serialize report");
-        assert_eq!(json["schema"], 3);
+        assert_eq!(json["schema"], REPORT_SCHEMA);
         assert_eq!(json["filter"]["excluded"][0], "anonymous");
         assert_eq!(json["filter"]["excluded"][1], "extra");
         assert_eq!(json["totals"]["nodes"]["selected"], 8);
@@ -389,6 +849,112 @@ mod tests {
         assert_eq!(json["totals"]["nodes"]["by_property"]["extra"], 1);
         assert_eq!(json["totals"]["nodes"]["by_property"]["error"], 0);
         assert_eq!(json["totals"]["nodes"]["by_property"]["missing"], 0);
+    }
+
+    #[test]
+    fn selectors_are_or_combined_deduplicated_and_reported_by_type() {
+        let source = "fn first() {}\nfn second() {}\nstruct Other;\n";
+        let baseline = count_rust_with_filter(source, &Filter::default(), false);
+        let filter = Filter {
+            selected_types: vec![LanguageNodeType {
+                language: "rust".to_owned(),
+                node_type: "function_item".to_owned(),
+            }],
+            tree_sitter_selectors: vec![LanguageFilter {
+                language: "rust".to_owned(),
+                source: "(function_item) @select".to_owned(),
+            }],
+            ast_grep_selectors: vec![LanguageFilter {
+                language: "rust".to_owned(),
+                source: "fn first() { $$$BODY }".to_owned(),
+            }],
+            ast_grep_backend: Some(AST_GREP_BACKEND.to_owned()),
+            ..Filter::default()
+        };
+        let selected = count_rust_with_filter(source, &filter, true);
+
+        assert_eq!(selected.nodes.selected, 2);
+        assert_eq!(selected.nodes.total, baseline.nodes.total);
+        assert_eq!(selected.nodes.by_property, baseline.nodes.by_property);
+        assert_eq!(
+            selected.nodes.by_type,
+            [NodeTypeCount {
+                language: "rust".to_owned(),
+                node_type: "function_item".to_owned(),
+                named: true,
+                count: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_selector_for_another_language_selects_nothing() {
+        let filter = Filter {
+            selected_types: vec![LanguageNodeType {
+                language: "javascript".to_owned(),
+                node_type: "identifier".to_owned(),
+            }],
+            ..Filter::default()
+        };
+        let selected = count_rust_with_filter("fn main() {}\n", &filter, true);
+        assert_eq!(selected.nodes.selected, 0);
+        assert!(selected.nodes.by_type.is_empty());
+        assert!(selected.nodes.total > 0);
+    }
+
+    #[test]
+    fn exclusions_apply_after_selection_and_remove_captured_subtrees() {
+        let filter = Filter {
+            selected_types: vec![LanguageNodeType {
+                language: "rust".to_owned(),
+                node_type: "function_item".to_owned(),
+            }],
+            tree_sitter_queries: vec![LanguageFilter {
+                language: "rust".to_owned(),
+                source: r#"
+((function_item
+  name: (identifier) @_name) @exclude
+ (#eq? @_name "skip"))
+"#
+                .trim()
+                .to_owned(),
+            }],
+            ..Filter::default()
+        };
+        let selected = count_rust_with_filter("fn skip() {}\nfn keep() {}\n", &filter, false);
+        assert_eq!(selected.nodes.selected, 1);
+    }
+
+    #[test]
+    fn selector_queries_require_a_select_capture() {
+        let grammar: Language = tree_sitter_rust::LANGUAGE.into();
+        let filter = Filter {
+            tree_sitter_selectors: vec![LanguageFilter {
+                language: "rust".to_owned(),
+                source: "(identifier) @wrong".to_owned(),
+            }],
+            ..Filter::default()
+        };
+        let error = CompiledFilters::compile("rust", &grammar, &filter)
+            .err()
+            .expect("missing @select should fail");
+        assert!(error.to_string().contains("@select"));
+    }
+
+    #[test]
+    fn exact_type_selectors_reject_unknown_types_for_their_language() {
+        let grammar: Language = tree_sitter_rust::LANGUAGE.into();
+        let filter = Filter {
+            selected_types: vec![LanguageNodeType {
+                language: "rust".to_owned(),
+                node_type: "definitely_not_a_rust_node".to_owned(),
+            }],
+            ..Filter::default()
+        };
+        let error = CompiledFilters::compile("rust", &grammar, &filter)
+            .err()
+            .expect("unknown exact type should fail");
+        assert!(error.to_string().contains("unknown Tree-sitter node type"));
     }
 
     #[test]
@@ -503,6 +1069,7 @@ mod tests {
                             error: fixture.error_nodes,
                             missing: fixture.missing_nodes,
                         },
+                        by_type: Vec::new(),
                     },
                     max_depth: fixture.max_depth,
                     bytes: fixture.source.len() as u64,
