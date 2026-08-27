@@ -10,13 +10,22 @@ changing behavior.
 
 ## Measure
 
-Infer the measurement scope from the request, defaulting to the repository. Use
-`astcount`, or `nix run github:wokalski/astcount --` if it is unavailable. Keep
-the astcount version, parser backend, scope, language overrides, and ignore
-policy fixed. Save reports outside the measured scope:
+Infer the measurement scope from the request, defaulting to the repository.
+
+Resolve one astcount command before measuring, in this order:
+
+1. Use `astcount` when it is already installed.
+2. Otherwise, use `bunx astcount@0.2.0` when Bun is available.
+3. Otherwise, use `nix run github:wokalski/astcount/v0.2.0 --` when Nix is
+   available.
+4. If none is available, stop and tell the user that Bun or Nix is required.
+
+Run the selected command with `--version`, then reuse that exact invocation for
+every command below. Keep the astcount version, parser backend, scope, language
+overrides, and ignore policy fixed. Save reports outside the measured scope:
 
 ```console
-astcount count <scope> --exclude anonymous --json --save <before.json>
+<astcount-command> count <scope> --exclude anonymous --json --save <before.json>
 ```
 
 Use the per-file counts to choose one high-value target. Inspect the code and its
@@ -30,8 +39,8 @@ command supplied by the user. Do not weaken tests or alter public behavior
 without permission. Recount the identical scope:
 
 ```console
-astcount count <scope> --exclude anonymous --json --save <after.json>
-astcount compare <before.json> <after.json> --fail-on-increase
+<astcount-command> count <scope> --exclude anonymous --json --save <after.json>
+<astcount-command> compare <before.json> <after.json> --fail-on-increase
 ```
 
 Keep the refactor only when verification passes and named-node count decreases.

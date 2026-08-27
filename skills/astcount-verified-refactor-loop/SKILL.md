@@ -13,14 +13,22 @@ Require the user's exact deterministic test command before editing. If it is
 missing, stop and ask for it; do not guess or substitute a different check.
 Infer the measurement scope from the request, defaulting to the repository.
 
-Use `astcount`, or `nix run github:wokalski/astcount --` if it is unavailable.
-Keep its version, parser backend, scope, language overrides, and ignore policy
-fixed for the entire loop. Run the exact test command once to establish a green
-baseline. Stop on a pre-existing failure unless the user authorizes that
-specific red baseline. Save the initial report outside the measured scope:
+Resolve one astcount command before measuring, in this order:
+
+1. Use `astcount` when it is already installed.
+2. Otherwise, use `bunx astcount@0.2.0` when Bun is available.
+3. Otherwise, use `nix run github:wokalski/astcount/v0.2.0 --` when Nix is
+   available.
+4. If none is available, stop and tell the user that Bun or Nix is required.
+
+Run the selected command with `--version`, then reuse that exact invocation for
+the entire loop. Keep its parser backend, scope, language overrides, and ignore
+policy fixed. Run the exact test command once to establish a green baseline.
+Stop on a pre-existing failure unless the user authorizes that specific red
+baseline. Save the initial report outside the measured scope:
 
 ```console
-astcount count <scope> --exclude anonymous --json --save <best.json>
+<astcount-command> count <scope> --exclude anonymous --json --save <best.json>
 ```
 
 ## Iterate
@@ -32,7 +40,8 @@ For each candidate:
 3. Format the changed code.
 4. Run the exact deterministic test command unchanged.
 5. Recount the identical scope into a new candidate report.
-6. Run `astcount compare <best.json> <candidate.json> --fail-on-increase`.
+6. Run `<astcount-command> compare <best.json> <candidate.json>
+   --fail-on-increase`.
 7. Accept the candidate only when the test passes and named nodes decrease;
    otherwise undo only that candidate without disturbing user work.
 8. Replace the best report after acceptance, then choose the next candidate.

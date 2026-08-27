@@ -1,0 +1,14 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Measured refactoring",
+      "description": "Behavior-preserving refactoring guided by astcount.",
+      "skills": [
+        "astcount-refactor",
+        "astcount-verified-refactor-loop"
+      ]
+    }
+  ]
+}
