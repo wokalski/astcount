@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "A fast, polyglot AST node counter"
 license = "MIT"
-repository = "https://github.com/adamchol/deslop"
+repository = "https://github.com/wokalski/deslop"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -14,6 +14,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 tree-sitter-language-pack = "=1.15.8"
 tree-sitter = "=0.26.13"
+
+[dev-dependencies]
+tree-sitter-rust = "=0.24.2"
 
 [profile.release]
 codegen-units = 1

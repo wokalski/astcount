@@ -38,6 +38,10 @@ nix develop -c cargo clippy --all-targets -- -D warnings
 nix flake check
 ```
 
+The test suite includes exact golden counts for a pinned Rust grammar, covering
+AST, named, and concrete nodes plus comments, parser errors, missing nodes, tree
+depth, and byte totals. It runs offline as part of `nix flake check`.
+
 ## What the number means
 
 Node count is a structural size metric, not a proof of software quality. Compare

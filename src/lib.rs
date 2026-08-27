@@ -270,14 +270,80 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "downloads the Rust grammar on first use"]
-    fn counts_a_real_rust_tree() {
-        let source = b"fn answer() -> u32 { 40 + 2 }\n";
-        let result = count_source(Path::new("answer.rs"), "rust", source, CountMode::Ast)
-            .expect("parse Rust");
-        assert_eq!(result.metrics.errors, 0);
-        assert!(result.metrics.ast_nodes > 5);
-        assert!(result.metrics.total_nodes > result.metrics.ast_nodes);
-        assert_eq!(result.metrics.nodes, result.metrics.ast_nodes);
+    fn golden_counts_pinned_rust_syntax_trees() {
+        struct Golden {
+            name: &'static str,
+            source: &'static [u8],
+            ast_nodes: u64,
+            named_nodes: u64,
+            total_nodes: u64,
+            errors: u64,
+            max_depth: u32,
+        }
+
+        let fixtures = [
+            Golden {
+                name: "comment is named but excluded from the AST",
+                source: b"// note\nfn main() { let x = 1; }\n",
+                ast_nodes: 8,
+                named_nodes: 9,
+                total_nodes: 18,
+                errors: 0,
+                max_depth: 4,
+            },
+            Golden {
+                name: "error recovery node",
+                source: b"fn main( {\n",
+                ast_nodes: 2,
+                named_nodes: 3,
+                total_nodes: 6,
+                errors: 1,
+                max_depth: 2,
+            },
+            Golden {
+                name: "missing semicolon node",
+                source: b"fn main() { let x = 1 }\n",
+                ast_nodes: 8,
+                named_nodes: 8,
+                total_nodes: 16,
+                errors: 1,
+                max_depth: 4,
+            },
+        ];
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("configure pinned Rust parser");
+
+        for fixture in fixtures {
+            for (mode, nodes) in [
+                (CountMode::Ast, fixture.ast_nodes),
+                (CountMode::Named, fixture.named_nodes),
+                (CountMode::All, fixture.total_nodes),
+            ] {
+                let actual = count_source_with_parser(
+                    Path::new("fixture.rs"),
+                    "rust",
+                    fixture.source,
+                    mode,
+                    &mut parser,
+                )
+                .expect("count pinned Rust fixture")
+                .metrics;
+                let expected = FileMetrics {
+                    path: PathBuf::from("fixture.rs"),
+                    language: "rust".to_owned(),
+                    nodes,
+                    ast_nodes: fixture.ast_nodes,
+                    named_nodes: fixture.named_nodes,
+                    total_nodes: fixture.total_nodes,
+                    errors: fixture.errors,
+                    max_depth: fixture.max_depth,
+                    bytes: fixture.source.len() as u64,
+                };
+                assert_eq!(actual, expected, "{} in {mode:?} mode", fixture.name);
+            }
+        }
     }
 }

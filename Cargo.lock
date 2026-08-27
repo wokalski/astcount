@@ -321,6 +321,7 @@ dependencies = [
  "serde_json",
  "tree-sitter",
  "tree-sitter-language-pack",
+ "tree-sitter-rust",
 ]
 
 [[package]]
@@ -1158,6 +1159,16 @@ dependencies = [
  "tree-sitter",
  "ureq",
  "zstd",
+]
+
+[[package]]
+name = "tree-sitter-rust"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
 ]
 
 [[package]]
