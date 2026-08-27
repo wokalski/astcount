@@ -111,7 +111,7 @@
                   --cache cache \
                   "./packages/astcount-${npmPlatform}-${version}.tgz" \
                   "./packages/astcount-${version}.tgz"
-                test "$(install/node_modules/.bin/astcount --version)" = \
+                test "$(node install/node_modules/astcount/bin/astcount.js --version)" = \
                   "astcount ${version}"
                 touch "$out"
               '';
