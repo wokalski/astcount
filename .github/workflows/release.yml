@@ -100,13 +100,26 @@ jobs:
         shell: bash
         run: |
           files=(artifacts/binary-*/*.tar.gz artifacts/binary-*/*.sha256)
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" \
-              --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
-              --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --generate-notes --draft
           fi
+
+          for file in "${files[@]}"; do
+            uploaded=false
+            for attempt in 1 2 3; do
+              if timeout 60s gh release upload "$GITHUB_REF_NAME" "$file" \
+                --repo "$GITHUB_REPOSITORY" --clobber; then
+                uploaded=true
+                break
+              fi
+              echo "Upload attempt ${attempt} failed for ${file}" >&2
+            done
+            test "$uploaded" = true
+          done
+
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --latest
 
   npm:
     name: Publish npm packages
@@ -129,8 +142,6 @@ jobs:
             node scripts/release.mjs stage "$platform" "artifacts/binary-$platform/astcount"
           done
       - name: Publish platform packages, then launcher
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           publish_if_missing() {
@@ -141,7 +152,7 @@ jobs:
             if npm view "${name}@${version}" version >/dev/null 2>&1; then
               echo "${name}@${version} is already published"
             else
-              npm publish "$directory" --access public --provenance
+              npm publish "./${directory}" --access public --provenance
             fi
           }
 

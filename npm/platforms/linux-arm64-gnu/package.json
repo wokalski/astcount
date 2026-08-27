@@ -7,6 +7,10 @@
   "cpu": ["arm64"],
   "libc": ["glibc"],
   "files": ["bin/astcount"],
-  "repository": "git+https://github.com/wokalski/astcount.git",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wokalski/astcount.git",
+    "directory": "npm/platforms/linux-arm64-gnu"
+  },
   "publishConfig": { "access": "public" }
 }

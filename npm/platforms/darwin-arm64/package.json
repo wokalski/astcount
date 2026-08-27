@@ -6,6 +6,10 @@
   "os": ["darwin"],
   "cpu": ["arm64"],
   "files": ["bin/astcount"],
-  "repository": "git+https://github.com/wokalski/astcount.git",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wokalski/astcount.git",
+    "directory": "npm/platforms/darwin-arm64"
+  },
   "publishConfig": { "access": "public" }
 }

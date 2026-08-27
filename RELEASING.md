@@ -12,9 +12,12 @@ nix develop -c node scripts/release.mjs check 0.1.0
 The public npm package is `astcount`, with four optional platform packages
 containing the native binaries.
 
-The first npm publication needs a granular automation token stored as the
-GitHub Actions secret `NPM_TOKEN`. Push an annotated version tag matching
-`Cargo.toml`:
+npm will not configure a trusted publisher until a package exists. Bootstrap
+each package once from an authenticated local npm session with publish-time
+2FA. A temporary granular token with bypass-2FA also works, but should be
+revoked immediately after bootstrapping rather than kept in GitHub Actions.
+
+Push an annotated version tag matching `Cargo.toml`:
 
 ```console
 git tag -a v0.1.0 -m 'astcount 0.1.0'
@@ -28,10 +31,32 @@ The workflow publishes checksummed GitHub release archives, then the four
 platform npm packages, then the launcher. Re-running a partially completed
 release skips package versions that already exist.
 
-After the first publication, configure npm trusted publishing for all five
-packages using GitHub repository `wokalski/astcount`, workflow `release.yml`, and
-the `npm publish` permission. The workflow already grants `id-token: write`, so
-`NPM_TOKEN` can then be removed. npm will attach provenance automatically.
+After the first publication, log in with a normal npm web session and configure
+trusted publishing for all five packages. `npm trust` requires npm 11.15 or
+newer and does not accept a granular token that bypasses 2FA:
+
+```console
+npm login --auth-type=web
+for package in \
+  astcount-darwin-arm64 \
+  astcount-darwin-x64 \
+  astcount-linux-arm64-gnu \
+  astcount-linux-x64-gnu \
+  astcount
+do
+  npx --yes npm@11.19.0 trust github "$package" \
+    --repo wokalski/astcount \
+    --file release.yml \
+    --allow-publish \
+    --yes
+  sleep 2
+done
+```
+
+The workflow grants `id-token: write`, so releases then use short-lived OIDC
+credentials and need no `NPM_TOKEN`. npm attaches provenance automatically.
+For the strictest policy, package settings can disallow token publishing after
+trusted publishing has been verified.
 
 ## Public Nix cache
 
