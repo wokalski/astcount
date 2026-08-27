@@ -176,8 +176,8 @@ behavior-preserving refactor using before/after measurements.
 [`astcount-verified-refactor-loop`](skills/astcount-verified-refactor-loop/SKILL.md)
 runs the guarded iterative version: every candidate must pass the user's exact
 deterministic test command and lower the named-node count before it is accepted.
-Both skills use an installed `astcount` when available and can otherwise run the
-pinned release through Bun or Nix.
+Both skills detect Nix users with `command -v nix`; otherwise they run the pinned
+release through Bun, with npx as a fallback.
 
 ## What the number means
 

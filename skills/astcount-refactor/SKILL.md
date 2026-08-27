@@ -12,13 +12,14 @@ changing behavior.
 
 Infer the measurement scope from the request, defaulting to the repository.
 
-Resolve one astcount command before measuring, in this order:
+Resolve one astcount command before measuring:
 
-1. Use `astcount` when it is already installed.
-2. Otherwise, use `bunx astcount@0.2.0` when Bun is available.
-3. Otherwise, use `nix run github:wokalski/astcount/v0.2.0 --` when Nix is
-   available.
-4. If none is available, stop and tell the user that Bun or Nix is required.
+1. Run `command -v nix`. If it succeeds, treat the user as a Nix user and use
+   `nix run github:wokalski/astcount/v0.2.0 --`.
+2. Otherwise, use `bunx astcount@0.2.0` when `command -v bun` succeeds.
+3. Otherwise, use `npx --yes astcount@0.2.0` when `command -v npx` succeeds.
+4. If none is available, stop and tell the user that Nix, Bun, or npx is
+   required.
 
 Run the selected command with `--version`, then reuse that exact invocation for
 every command below. Keep the astcount version, parser backend, scope, language
