@@ -26,13 +26,13 @@ task in the same prompt. These are Codex prompts, not shell commands:
 
 ```text
 $astcount-refactor Refactor this repository.
-$astcount-verified-refactor-loop Refactor src repeatedly. Use `bun test` as the exact deterministic test command. Stop after five accepted refactors.
+$astcount-verified-refactor-loop Refactor src deeply. Use `bun test` as the exact deterministic test command and keep digging until no credible structural improvement remains.
 ```
 
 [`astcount-refactor`](skills/astcount-refactor/SKILL.md) keeps digging through
 behavior-preserving refactors until credible structural gains are exhausted.
 [`astcount-verified-refactor-loop`](skills/astcount-verified-refactor-loop/SKILL.md)
-runs the guarded iterative version: every candidate must pass the user's exact
+does the same behind a strict gate: every candidate must pass the user's exact
 deterministic test command and lower the named-node count before it is accepted.
 Both skills detect Nix users with `command -v nix`; otherwise they run the pinned
 release through Bun, with npx as a fallback.

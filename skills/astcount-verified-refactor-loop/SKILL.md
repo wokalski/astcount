@@ -1,11 +1,14 @@
 ---
 name: astcount-verified-refactor-loop
-description: Iteratively reduce code complexity with astcount, accepting each small refactor only after the same user-specified deterministic test command passes and named-node count decreases. Use for guarded repeated optimization, not a single refactor.
+description: Deeply reduce code complexity through repeated astcount-guided refactors, accepting each candidate only after the same user-specified deterministic test command passes and named-node count decreases, and continuing until no credible structural improvement remains. Use for sustained optimization behind a strict deterministic gate.
 ---
 
 # Run a verified astcount refactor loop
 
 Optimize Tree-sitter named-node count through a repeatable test-and-measure gate.
+Do not stop after the first successful decrease. Continue autonomously in the
+same run; do not hand control back or ask whether to continue merely because one
+or several refactors passed the gate.
 
 ## Establish the guard
 
@@ -32,11 +35,14 @@ baseline. Save the initial report outside the measured scope:
 <astcount-command> count <scope> --exclude anonymous --json --save <best.json>
 ```
 
+Use the per-file counts to rank several high-value areas. Inspect their code,
+tests, callers, and neighboring abstractions before choosing candidates.
+
 ## Iterate
 
 For each candidate:
 
-1. Use per-file counts and code inspection to choose one high-value target.
+1. Choose a credible simplification from the highest-value remaining areas.
 2. Make one small, readable, behavior-preserving simplification.
 3. Format the changed code.
 4. Run the exact deterministic test command unchanged.
@@ -45,11 +51,15 @@ For each candidate:
    --fail-on-increase`.
 7. Accept the candidate only when the test passes and named nodes decrease;
    otherwise undo only that candidate without disturbing user work.
-8. Replace the best report after acceptance, then choose the next candidate.
+8. Replace the best report after acceptance, re-rank the remaining files, and
+   continue. A candidate passing both gates is progress, not a stopping
+   condition.
 
-Stop when no credible simplification remains, the user-supplied limit is met, or
-the next change would trade away clarity or behavior. Run the exact test command
-once more after the final accepted candidate.
+Before stopping for lack of opportunities, inspect multiple high-count areas and
+their surrounding abstractions. Stop only when no credible simplification
+remains, the user-supplied limit is met, or further count reduction would trade
+away behavior, clarity, public APIs, runtime, or allocation. Run the exact test
+command once more after the final accepted candidate.
 
 ## Guardrails
 
@@ -63,4 +73,4 @@ once more after the final accepted candidate.
 
 Report the initial and final counts, delta and percentage, scope, astcount
 version/backend, exact test command and result, accepted refactors, rejected
-candidates, stopping reason, and tradeoffs.
+candidates, areas inspected, stopping reason, and tradeoffs.
