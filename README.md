@@ -93,6 +93,10 @@ byte totals. It runs offline as part of `nix flake check`.
 package and invokes it through the JavaScript launcher. Release automation and
 public-cache setup are documented in [`RELEASING.md`](RELEASING.md).
 
+The repository also includes the [`astcount-reduce-complexity`](skills/astcount-reduce-complexity/SKILL.md)
+Codex skill. Give it an exact test command and it will iteratively accept only
+behavior-preserving refactors that reduce the named-node count.
+
 ## What the number means
 
 Node count is a structural size metric, not a proof of software quality. Compare

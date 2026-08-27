@@ -7,47 +7,30 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
-const platforms = {
-  "darwin-arm64": {
-    packageName: "astcount-darwin-arm64",
-    directory: "darwin-arm64"
-  },
-  "darwin-x64": {
-    packageName: "astcount-darwin-x64",
-    directory: "darwin-x64"
-  },
-  "linux-arm64": {
-    packageName: "astcount-linux-arm64-gnu",
-    directory: "linux-arm64-gnu"
-  },
-  "linux-x64": {
-    packageName: "astcount-linux-x64-gnu",
-    directory: "linux-x64-gnu"
-  }
-};
-
 const key = `${process.platform}-${process.arch}`;
-const platform = platforms[key];
-if (!platform) {
+const supported = new Set(["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]);
+if (!supported.has(key)) {
   fail(`unsupported platform ${key}`);
 }
 if (process.platform === "linux" && !isGlibc()) {
   fail("Linux musl is not supported yet; use the Nix package or build from source");
 }
+const target = process.platform === "linux" ? `${key}-gnu` : key;
+const packageName = `astcount-${target}`;
 
 let binary;
 try {
-  const manifest = require.resolve(`${platform.packageName}/package.json`);
+  const manifest = require.resolve(`${packageName}/package.json`);
   binary = `${dirname(manifest)}/bin/astcount`;
 } catch {
   const developmentBinary = fileURLToPath(
-    new URL(`../../platforms/${platform.directory}/bin/astcount`, import.meta.url)
+    new URL(`../../platforms/${target}/bin/astcount`, import.meta.url)
   );
   if (existsSync(developmentBinary)) {
     binary = developmentBinary;
   } else {
     fail(
-      `${platform.packageName} is missing; reinstall without omitting optional dependencies`
+      `${packageName} is missing; reinstall without omitting optional dependencies`
     );
   }
 }

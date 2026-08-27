@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use astcount::{
     FileMetrics, NodeProperty, NodeSelection, Report, count_source_with_parser,
     detect_known_language, report,
@@ -303,14 +303,20 @@ fn process_files(
                     let Some(item) = work.get(index) else {
                         break;
                     };
-                    if let Some(outcome) = process_path(
+                    match process_path(
                         &item.path,
                         forced_language,
                         selection,
                         &mut parsers,
                         &mut source,
                     ) {
-                        outcomes.push(outcome);
+                        Ok(Some(result)) => {
+                            outcomes.push(Outcome::Counted(result.metrics, result.elapsed));
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            outcomes.push(Outcome::Failed(item.path.clone(), error));
+                        }
                     }
                 }
                 outcomes
@@ -337,36 +343,26 @@ fn process_path(
     selection: NodeSelection,
     parsers: &mut HashMap<String, TsParser>,
     source: &mut Vec<u8>,
-) -> Option<Outcome> {
+) -> Result<Option<astcount::TimedMetrics>> {
     let language = match forced_language.or_else(|| detect_known_language(path, &[])) {
-        Some(language) => language,
-        None => match detect_shebang(path) {
-            Ok(Some(language)) => language,
-            Ok(None) => return None,
-            Err(error) => return Some(Outcome::Failed(path.to_path_buf(), error.into())),
-        },
+        Some(language) => Some(language),
+        None => detect_shebang(path)?,
+    };
+    let Some(language) = language else {
+        return Ok(None);
     };
     source.clear();
-    let source_read = std::fs::File::open(path).and_then(|mut file| file.read_to_end(source));
-    if let Err(error) = source_read {
-        return Some(Outcome::Failed(path.to_path_buf(), error.into()));
-    }
-    if !parsers.contains_key(language) {
-        let grammar = match get_language(language) {
-            Ok(grammar) => grammar,
-            Err(error) => return Some(Outcome::Failed(path.to_path_buf(), error.into())),
-        };
-        let mut parser = TsParser::new();
-        if let Err(error) = parser.set_language(&grammar) {
-            return Some(Outcome::Failed(path.to_path_buf(), error.into()));
+    std::fs::File::open(path)?.read_to_end(source)?;
+    let parser = match parsers.entry(language.to_owned()) {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => {
+            let grammar = get_language(language)?;
+            let mut parser = TsParser::new();
+            parser.set_language(&grammar)?;
+            entry.insert(parser)
         }
-        parsers.insert(language.to_owned(), parser);
-    }
-    let parser = parsers.get_mut(language)?;
-    match count_source_with_parser(path, language, source, selection, parser) {
-        Ok(result) => Some(Outcome::Counted(result.metrics, result.elapsed)),
-        Err(error) => Some(Outcome::Failed(path.to_path_buf(), error)),
-    }
+    };
+    count_source_with_parser(path, language, source, selection, parser).map(Some)
 }
 
 fn detect_shebang(path: &Path) -> std::io::Result<Option<&'static str>> {
@@ -399,31 +395,28 @@ fn load_report(path: &Path) -> Result<Report> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let report: Report =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
-    if report.schema != 2 {
-        bail!(
-            "unsupported report schema {} in {}",
-            report.schema,
-            path.display()
-        );
-    }
+    ensure!(
+        report.schema == 2,
+        "unsupported report schema {} in {}",
+        report.schema,
+        path.display()
+    );
     Ok(report)
 }
 
 fn difference(current: &Report, previous: &Report) -> Result<i128> {
-    if current.selection != previous.selection {
-        bail!(
-            "cannot compare reports with different node selections: {:?} versus {:?}",
-            current.selection,
-            previous.selection
-        );
-    }
-    if current.parser_backend != previous.parser_backend {
-        bail!(
-            "cannot compare parser backends {} and {}",
-            current.parser_backend,
-            previous.parser_backend
-        );
-    }
+    ensure!(
+        current.selection == previous.selection,
+        "cannot compare reports with different node selections: {:?} versus {:?}",
+        current.selection,
+        previous.selection
+    );
+    ensure!(
+        current.parser_backend == previous.parser_backend,
+        "cannot compare parser backends {} and {}",
+        current.parser_backend,
+        previous.parser_backend
+    );
     Ok(i128::from(current.totals.nodes) - i128::from(previous.totals.nodes))
 }
 

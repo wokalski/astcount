@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use tree_sitter::Parser;
 use tree_sitter_language_pack::{
@@ -11,22 +11,18 @@ use tree_sitter_language_pack::{
 static PROPERTIES_PARSER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeProperty {
-    Named,
-    Extra,
-    Error,
-    Missing,
+    Named = 1 << 0,
+    Extra = 1 << 1,
+    Error = 1 << 2,
+    Missing = 1 << 3,
 }
 
 impl NodeProperty {
     const fn mask(self) -> u8 {
-        match self {
-            Self::Named => 1 << 0,
-            Self::Extra => 1 << 1,
-            Self::Error => 1 << 2,
-            Self::Missing => 1 << 3,
-        }
+        self as u8
     }
 }
 
@@ -43,17 +39,16 @@ impl NodeSelection {
     ///
     /// Returns an error if the same property is both required and excluded.
     pub fn new(require: &[NodeProperty], exclude: &[NodeProperty]) -> Result<Self> {
-        let require = require
-            .iter()
-            .fold(0, |mask, property| mask | property.mask());
-        let exclude = exclude
-            .iter()
-            .fold(0, |mask, property| mask | property.mask());
-        if require & exclude != 0 {
-            return Err(anyhow!(
-                "a node property cannot be both required and excluded"
-            ));
-        }
+        let mask = |properties: &[NodeProperty]| {
+            properties
+                .iter()
+                .fold(0, |mask, property| mask | property.mask())
+        };
+        let (require, exclude) = (mask(require), mask(exclude));
+        ensure!(
+            require & exclude == 0,
+            "a node property cannot be both required and excluded"
+        );
         Ok(Self { require, exclude })
     }
 

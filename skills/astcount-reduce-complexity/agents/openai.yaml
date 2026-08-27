@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reduce Complexity with astcount"
+  short_description: "Lower named-node counts without breaking tests"
+  default_prompt: "Use $astcount-reduce-complexity to reduce named-node complexity while keeping my specified tests green."
