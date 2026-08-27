@@ -156,17 +156,19 @@ automation and public-cache setup are documented in
 
 ## Agent skills
 
-Install the repository's skills for Codex or another supported coding agent with
-the [skills.sh CLI](https://skills.sh/wokalski/astcount):
+Run either skill directly with Codex through the
+[skills.sh CLI](https://skills.sh/wokalski/astcount), without installing it:
+
+```console
+bunx skills use wokalski/astcount@astcount-refactor --agent codex
+bunx skills use wokalski/astcount@astcount-verified-refactor-loop --agent codex
+```
+
+To keep the skills available in Codex or another supported coding agent, install
+either or both of them:
 
 ```console
 bunx skills add wokalski/astcount
-```
-
-The installer lets you select either or both skills. To go directly to one of
-them, name it on the command line:
-
-```console
 bunx skills add wokalski/astcount --skill astcount-refactor
 bunx skills add wokalski/astcount --skill astcount-verified-refactor-loop
 ```
