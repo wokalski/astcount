@@ -11,6 +11,12 @@ const platforms = [
   "linux-arm64-gnu",
   "linux-x64-gnu"
 ];
+const platformMetadata = {
+  "darwin-arm64": { os: "darwin", cpu: "arm64" },
+  "darwin-x64": { os: "darwin", cpu: "x64" },
+  "linux-arm64-gnu": { os: "linux", cpu: "arm64", libc: "glibc" },
+  "linux-x64-gnu": { os: "linux", cpu: "x64", libc: "glibc" }
+};
 const [command, ...args] = process.argv.slice(2);
 
 if (command === "check") {
@@ -50,12 +56,41 @@ async function checkVersions(expected) {
     if (manifest.version !== cargoVersion) {
       fail(`${path} has version ${manifest.version}; expected ${cargoVersion}`);
     }
+    for (const lifecycle of ["preinstall", "install", "postinstall"]) {
+      if (manifest.scripts?.[lifecycle]) {
+        fail(`${path} must not define a ${lifecycle} script`);
+      }
+    }
   }
 
   const rootManifest = JSON.parse(await readFile(packagePaths[0], "utf8"));
+  const optionalNames = Object.keys(rootManifest.optionalDependencies ?? {}).sort();
+  const expectedNames = platforms.map((platform) => `astcount-${platform}`).sort();
+  if (JSON.stringify(optionalNames) !== JSON.stringify(expectedNames)) {
+    fail("launcher optional dependencies do not match the platform packages");
+  }
   for (const [name, version] of Object.entries(rootManifest.optionalDependencies)) {
     if (version !== cargoVersion) {
       fail(`${name} dependency has version ${version}; expected ${cargoVersion}`);
+    }
+  }
+
+  for (const [index, platform] of platforms.entries()) {
+    const path = packagePaths[index + 1];
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    const { os, cpu, libc } = platformMetadata[platform];
+    if (manifest.name !== `astcount-${platform}`) {
+      fail(`${path} has package name ${manifest.name}; expected astcount-${platform}`);
+    }
+    if (manifest.os?.length !== 1 || manifest.os[0] !== os) {
+      fail(`${path} must select os ${os}`);
+    }
+    if (manifest.cpu?.length !== 1 || manifest.cpu[0] !== cpu) {
+      fail(`${path} must select cpu ${cpu}`);
+    }
+    const expectedLibc = libc ? [libc] : undefined;
+    if (JSON.stringify(manifest.libc) !== JSON.stringify(expectedLibc)) {
+      fail(`${path} has incorrect libc selection`);
     }
   }
 }

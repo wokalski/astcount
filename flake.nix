@@ -14,6 +14,7 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
       npmPlatforms = {
         x86_64-linux = "linux-x64-gnu";
         aarch64-linux = "linux-arm64-gnu";
@@ -30,7 +31,7 @@
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "astcount";
-            version = "0.1.0";
+            inherit version;
             src = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions [
@@ -99,8 +100,19 @@
                 chmod -R u+w npm
                 mkdir -p npm/platforms/${npmPlatform}/bin
                 cp ${package}/bin/astcount npm/platforms/${npmPlatform}/bin/astcount
-                node scripts/release.mjs check 0.1.0
-                test "$(node npm/astcount/bin/astcount.js --version)" = "astcount 0.1.0"
+                node scripts/release.mjs check ${version}
+
+                mkdir packages install cache
+                npm pack ./npm/platforms/${npmPlatform} \
+                  --pack-destination packages --silent --cache cache
+                npm pack ./npm/astcount \
+                  --pack-destination packages --silent --cache cache
+                npm install --prefix install --offline --ignore-scripts --no-audit \
+                  --cache cache \
+                  "./packages/astcount-${npmPlatform}-${version}.tgz" \
+                  "./packages/astcount-${version}.tgz"
+                test "$(install/node_modules/.bin/astcount --version)" = \
+                  "astcount ${version}"
                 touch "$out"
               '';
         }

@@ -8,6 +8,10 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   TSLP_OFFLINE: "1"
@@ -52,6 +56,22 @@ jobs:
           "$binary" --version
           node scripts/release.mjs stage "${{ matrix.platform }}" "$binary"
           version="${GITHUB_REF_NAME#v}"
+
+          package_dir="$RUNNER_TEMP/npm-packages"
+          install_dir="$RUNNER_TEMP/npm-install"
+          npm_cache="$RUNNER_TEMP/npm-cache"
+          mkdir -p "$package_dir"
+          npm pack "./npm/platforms/${{ matrix.platform }}" \
+            --pack-destination "$package_dir" --silent --cache "$npm_cache"
+          npm pack ./npm/astcount \
+            --pack-destination "$package_dir" --silent --cache "$npm_cache"
+          npm install --prefix "$install_dir" --offline --ignore-scripts --no-audit \
+            --cache "$npm_cache" \
+            "$package_dir/astcount-${{ matrix.platform }}-${version}.tgz" \
+            "$package_dir/astcount-${version}.tgz"
+          test "$("$install_dir/node_modules/.bin/astcount" --version)" = \
+            "astcount ${version}"
+
           archive="astcount-v${version}-${{ matrix.target }}.tar.gz"
           mkdir -p artifact bundle
           cp "$binary" bundle/astcount
@@ -74,16 +94,19 @@ jobs:
         with:
           pattern: binary-*
           path: artifacts
-      - name: Create release
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          artifacts/binary-*/*.tar.gz
-          artifacts/binary-*/*.sha256
-          --repo "$GITHUB_REPOSITORY"
-          --verify-tag
-          --generate-notes
+        shell: bash
+        run: |
+          files=(artifacts/binary-*/*.tar.gz artifacts/binary-*/*.sha256)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          fi
 
   npm:
     name: Publish npm packages
@@ -108,8 +131,21 @@ jobs:
       - name: Publish platform packages, then launcher
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
         run: |
+          publish_if_missing() {
+            local directory="$1"
+            local name version
+            name="$(node -p "require('./${directory}/package.json').name")"
+            version="$(node -p "require('./${directory}/package.json').version")"
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "${name}@${version} is already published"
+            else
+              npm publish "$directory" --access public --provenance
+            fi
+          }
+
           for platform in darwin-arm64 darwin-x64 linux-arm64-gnu linux-x64-gnu; do
-            npm publish "./npm/platforms/$platform" --access public --provenance
+            publish_if_missing "npm/platforms/$platform"
           done
-          npm publish ./npm/astcount --access public --provenance
+          publish_if_missing npm/astcount

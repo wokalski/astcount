@@ -22,8 +22,11 @@ git push origin v0.1.0
 ```
 
 The release workflow builds and smoke-tests Linux x64/arm64 and macOS
-x64/arm64 binaries on native GitHub-hosted runners. It publishes checksummed
-GitHub release archives, then the four platform npm packages, then the launcher.
+x64/arm64 binaries on native GitHub-hosted runners. Each runner packs and
+installs its npm tarballs with lifecycle scripts disabled before publication.
+The workflow publishes checksummed GitHub release archives, then the four
+platform npm packages, then the launcher. Re-running a partially completed
+release skips package versions that already exist.
 
 After the first publication, configure npm trusted publishing for all five
 packages using GitHub repository `wokalski/astcount`, workflow `release.yml`, and
@@ -39,8 +42,9 @@ per-cache write token. In the GitHub repository settings add:
 - Actions secret `CACHIX_AUTH_TOKEN=<per-cache write token>`
 
 CI detects the variable automatically, substitutes from the public cache, and
-pushes successful Nix builds when the token is available. Without those
-settings CI still builds normally, so forks do not need Cachix credentials.
+pushes Nix builds from `main` when the token is available. Pull requests use the
+cache read-only. Without those settings CI still builds normally, so forks do
+not need Cachix credentials.
 
 Once the cache exists, users can opt into it with:
 

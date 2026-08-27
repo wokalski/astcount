@@ -102,9 +102,11 @@ The test suite includes exact golden counts for a pinned Rust grammar, covering
 total, named, extra, anonymous, error, and missing selections plus tree depth and
 byte totals. It runs offline as part of `nix flake check`.
 
-`nix flake check` also stages the Nix-built executable as an npm platform
-package and invokes it through the JavaScript launcher. Release automation and
-public-cache setup are documented in [`RELEASING.md`](RELEASING.md).
+`nix flake check` also packs the Nix-built executable as an npm platform
+package, installs the launcher and native package from their tarballs with
+lifecycle scripts disabled, and invokes the installed command. Release
+automation and public-cache setup are documented in
+[`RELEASING.md`](RELEASING.md).
 
 The repository also includes the [`astcount-reduce-complexity`](skills/astcount-reduce-complexity/SKILL.md)
 Codex skill. Give it an exact test command and it will iteratively accept only
