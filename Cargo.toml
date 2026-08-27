@@ -1,10 +1,10 @@
 [package]
-name = "deslop"
+name = "astcount"
 version = "0.1.0"
 edition = "2024"
-description = "A fast, polyglot AST node counter"
+description = "A fast, polyglot Tree-sitter node counter"
 license = "MIT"
-repository = "https://github.com/wokalski/deslop"
+repository = "https://github.com/wokalski/astcount"
 
 [dependencies]
 anyhow = "1.0.100"

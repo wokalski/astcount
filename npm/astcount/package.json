@@ -1,0 +1,40 @@
+{
+  "name": "astcount",
+  "version": "0.1.0",
+  "description": "A fast, polyglot Tree-sitter node counter",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "astcount": "bin/astcount.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wokalski/astcount.git",
+    "directory": "npm/astcount"
+  },
+  "homepage": "https://github.com/wokalski/astcount#readme",
+  "bugs": "https://github.com/wokalski/astcount/issues",
+  "keywords": [
+    "ast",
+    "complexity",
+    "tree-sitter",
+    "cli",
+    "rust"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "astcount-darwin-arm64": "0.1.0",
+    "astcount-darwin-x64": "0.1.0",
+    "astcount-linux-arm64-gnu": "0.1.0",
+    "astcount-linux-x64-gnu": "0.1.0"
+  }
+}

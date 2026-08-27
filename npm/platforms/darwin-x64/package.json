@@ -1,11 +1,11 @@
 {
-  "name": "@wokalski/deslop-darwin-x64",
+  "name": "astcount-darwin-x64",
   "version": "0.1.0",
-  "description": "Native deslop binary for macOS Intel",
+  "description": "Native astcount binary for macOS Intel",
   "license": "MIT",
   "os": ["darwin"],
   "cpu": ["x64"],
-  "files": ["bin/deslop"],
-  "repository": "git+https://github.com/wokalski/deslop.git",
+  "files": ["bin/astcount"],
+  "repository": "git+https://github.com/wokalski/astcount.git",
   "publishConfig": { "access": "public" }
 }

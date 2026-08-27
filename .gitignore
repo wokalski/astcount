@@ -2,5 +2,5 @@
 /result
 /.direnv
 /npm/platforms/*/bin
-/npm/deslop/node_modules
+/npm/astcount/node_modules
 /npm/*.tgz

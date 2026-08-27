@@ -1,5 +1,5 @@
 {
-  description = "deslop: a fast, polyglot AST node counter";
+  description = "astcount: a fast, polyglot Tree-sitter node counter";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -29,7 +29,7 @@
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
-            pname = "deslop";
+            pname = "astcount";
             version = "0.1.0";
             src = pkgs.lib.fileset.toSource {
               root = ./.;
@@ -51,7 +51,7 @@
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/deslop";
+          program = "${self.packages.${system}.default}/bin/astcount";
           meta.description = "Count syntax-tree nodes across a source tree";
         };
       });
@@ -88,7 +88,7 @@
           inherit (self.packages.${system}) default;
 
           npm =
-            pkgs.runCommand "deslop-npm-smoke"
+            pkgs.runCommand "astcount-npm-smoke"
               {
                 nativeBuildInputs = [ pkgs.nodejs_24 ];
               }
@@ -98,9 +98,9 @@
                 cp ${./Cargo.toml} Cargo.toml
                 chmod -R u+w npm
                 mkdir -p npm/platforms/${npmPlatform}/bin
-                cp ${package}/bin/deslop npm/platforms/${npmPlatform}/bin/deslop
+                cp ${package}/bin/astcount npm/platforms/${npmPlatform}/bin/astcount
                 node scripts/release.mjs check 0.1.0
-                test "$(node npm/deslop/bin/deslop.js --version)" = "deslop 0.1.0"
+                test "$(node npm/astcount/bin/astcount.js --version)" = "astcount 0.1.0"
                 touch "$out"
               '';
         }

@@ -48,17 +48,17 @@ jobs:
       - name: Test and package binary
         shell: bash
         run: |
-          binary="target/${{ matrix.target }}/release/deslop"
+          binary="target/${{ matrix.target }}/release/astcount"
           "$binary" --version
           node scripts/release.mjs stage "${{ matrix.platform }}" "$binary"
           version="${GITHUB_REF_NAME#v}"
-          archive="deslop-v${version}-${{ matrix.target }}.tar.gz"
+          archive="astcount-v${version}-${{ matrix.target }}.tar.gz"
           mkdir -p artifact bundle
-          cp "$binary" bundle/deslop
+          cp "$binary" bundle/astcount
           cp LICENSE README.md bundle/
           tar -C bundle -czf "artifact/$archive" .
           (cd artifact && shasum -a 256 "$archive" > "$archive.sha256")
-          cp "$binary" artifact/deslop
+          cp "$binary" artifact/astcount
       - uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.platform }}
@@ -103,7 +103,7 @@ jobs:
       - name: Stage native packages
         run: |
           for platform in darwin-arm64 darwin-x64 linux-arm64-gnu linux-x64-gnu; do
-            node scripts/release.mjs stage "$platform" "artifacts/binary-$platform/deslop"
+            node scripts/release.mjs stage "$platform" "artifacts/binary-$platform/astcount"
           done
       - name: Publish platform packages, then launcher
         env:
@@ -112,4 +112,4 @@ jobs:
           for platform in darwin-arm64 darwin-x64 linux-arm64-gnu linux-x64-gnu; do
             npm publish "./npm/platforms/$platform" --access public --provenance
           done
-          npm publish ./npm/deslop --access public --provenance
+          npm publish ./npm/astcount --access public --provenance

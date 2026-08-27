@@ -5,28 +5,32 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Parser, ValueEnum};
-use deslop::{
-    CountMode, FileMetrics, Report, count_source_with_parser, detect_known_language, report,
+use astcount::{
+    FileMetrics, NodeProperty, NodeSelection, Report, count_source_with_parser,
+    detect_known_language, report,
 };
+use clap::{Parser, ValueEnum};
 use ignore::WalkBuilder;
 use tree_sitter::Parser as TsParser;
 use tree_sitter_language_pack::get_language;
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum ModeArg {
-    #[default]
-    Ast,
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum NodePredicateArg {
     Named,
-    All,
+    Anonymous,
+    Extra,
+    Error,
+    Missing,
 }
 
-impl From<ModeArg> for CountMode {
-    fn from(value: ModeArg) -> Self {
-        match value {
-            ModeArg::Ast => Self::Ast,
-            ModeArg::Named => Self::Named,
-            ModeArg::All => Self::All,
+impl NodePredicateArg {
+    const fn property(self) -> Option<NodeProperty> {
+        match self {
+            Self::Named => Some(NodeProperty::Named),
+            Self::Anonymous => None,
+            Self::Extra => Some(NodeProperty::Extra),
+            Self::Error => Some(NodeProperty::Error),
+            Self::Missing => Some(NodeProperty::Missing),
         }
     }
 }
@@ -39,9 +43,13 @@ struct Args {
     #[arg(default_value = ".")]
     paths: Vec<PathBuf>,
 
-    /// Count named AST-like nodes or every concrete syntax node
-    #[arg(long, value_enum, default_value_t)]
-    mode: ModeArg,
+    /// Require a Tree-sitter property (anonymous means not named)
+    #[arg(long, value_enum, value_delimiter = ',')]
+    require: Vec<NodePredicateArg>,
+
+    /// Exclude a Tree-sitter property (anonymous means not named)
+    #[arg(long, value_enum, value_delimiter = ',')]
+    exclude: Vec<NodePredicateArg>,
 
     /// Force one Tree-sitter language for every input file
     #[arg(short, long)]
@@ -98,7 +106,7 @@ struct WorkItem {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("deslop: {error:#}");
+        eprintln!("astcount: {error:#}");
         std::process::exit(2);
     }
 }
@@ -106,7 +114,21 @@ fn main() {
 #[allow(clippy::too_many_lines)]
 fn run() -> Result<()> {
     let args = Args::parse();
-    let mode = args.mode.into();
+    let mut required = Vec::new();
+    let mut excluded_properties = Vec::new();
+    for predicate in &args.require {
+        match predicate.property() {
+            Some(property) => required.push(property),
+            None => excluded_properties.push(NodeProperty::Named),
+        }
+    }
+    for predicate in &args.exclude {
+        match predicate.property() {
+            Some(property) => excluded_properties.push(property),
+            None => required.push(NodeProperty::Named),
+        }
+    }
+    let selection = NodeSelection::new(&required, &excluded_properties)?;
     let started = Instant::now();
     let builder = walk_builder(&args)?;
     let current_dir = std::env::current_dir().context("get current directory")?;
@@ -120,7 +142,7 @@ fn run() -> Result<()> {
     outcomes.extend(process_files(
         &work,
         args.language.as_deref(),
-        mode,
+        selection,
         args.threads,
     ));
 
@@ -143,10 +165,10 @@ fn run() -> Result<()> {
         } else {
             format!("{}: ", path.display())
         };
-        eprintln!("deslop: {prefix}{error:#}");
+        eprintln!("astcount: {prefix}{error:#}");
     }
 
-    let report = report(files, mode);
+    let report = report(files, selection);
     if report.files.is_empty() && !failures.is_empty() {
         bail!("no files could be measured");
     }
@@ -181,7 +203,9 @@ fn run() -> Result<()> {
         );
     }
 
-    if args.fail_on_parse_error && report.totals.errors > 0 {
+    if args.fail_on_parse_error
+        && (report.totals.error_nodes > 0 || report.totals.missing_nodes > 0)
+    {
         std::process::exit(1);
     }
     if args.fail_on_increase && comparison.is_some_and(|delta| delta > 0) {
@@ -251,7 +275,7 @@ fn discover_files(
 fn process_files(
     work: &[WorkItem],
     forced_language: Option<&str>,
-    mode: CountMode,
+    selection: NodeSelection,
     requested_workers: usize,
 ) -> Vec<Outcome> {
     if work.is_empty() {
@@ -279,9 +303,13 @@ fn process_files(
                     let Some(item) = work.get(index) else {
                         break;
                     };
-                    if let Some(outcome) =
-                        process_path(&item.path, forced_language, mode, &mut parsers, &mut source)
-                    {
+                    if let Some(outcome) = process_path(
+                        &item.path,
+                        forced_language,
+                        selection,
+                        &mut parsers,
+                        &mut source,
+                    ) {
                         outcomes.push(outcome);
                     }
                 }
@@ -306,7 +334,7 @@ fn process_files(
 fn process_path(
     path: &Path,
     forced_language: Option<&str>,
-    mode: CountMode,
+    selection: NodeSelection,
     parsers: &mut HashMap<String, TsParser>,
     source: &mut Vec<u8>,
 ) -> Option<Outcome> {
@@ -335,7 +363,7 @@ fn process_path(
         parsers.insert(language.to_owned(), parser);
     }
     let parser = parsers.get_mut(language)?;
-    match count_source_with_parser(path, language, source, mode, parser) {
+    match count_source_with_parser(path, language, source, selection, parser) {
         Ok(result) => Some(Outcome::Counted(result.metrics, result.elapsed)),
         Err(error) => Some(Outcome::Failed(path.to_path_buf(), error)),
     }
@@ -371,7 +399,7 @@ fn load_report(path: &Path) -> Result<Report> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let report: Report =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
-    if report.schema != 1 {
+    if report.schema != 2 {
         bail!(
             "unsupported report schema {} in {}",
             report.schema,
@@ -382,11 +410,11 @@ fn load_report(path: &Path) -> Result<Report> {
 }
 
 fn difference(current: &Report, previous: &Report) -> Result<i128> {
-    if current.mode != previous.mode {
+    if current.selection != previous.selection {
         bail!(
-            "cannot compare {} nodes with {} nodes",
-            current.mode,
-            previous.mode
+            "cannot compare reports with different node selections: {:?} versus {:?}",
+            current.selection,
+            previous.selection
         );
     }
     if current.parser_backend != previous.parser_backend {
@@ -408,23 +436,28 @@ fn print_human(
     show_files: bool,
 ) {
     if show_files {
-        println!("{:>12}  {:>12}  {:>8}  path", "nodes", "all", "errors");
+        println!(
+            "{:>12}  {:>12}  {:>8}  {:>8}  path",
+            "nodes", "all", "error", "missing"
+        );
         for file in &report.files {
             println!(
-                "{:>12}  {:>12}  {:>8}  {} [{}]",
+                "{:>12}  {:>12}  {:>8}  {:>8}  {} [{}]",
                 file.nodes,
                 file.total_nodes,
-                file.errors,
+                file.error_nodes,
+                file.missing_nodes,
                 file.path.display(),
                 file.language
             );
         }
     }
     println!(
-        "{:>12}  {:>12}  {:>8}  total ({} files, {}, {:.1} MiB/s)",
+        "{:>12}  {:>12}  {:>8}  {:>8}  total ({} files, {}, {:.1} MiB/s)",
         report.totals.nodes,
         report.totals.total_nodes,
-        report.totals.errors,
+        report.totals.error_nodes,
+        report.totals.missing_nodes,
         report.totals.files,
         human_bytes(report.totals.bytes),
         throughput(report.totals.bytes, elapsed)

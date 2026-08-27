@@ -9,19 +9,19 @@ import { spawnSync } from "node:child_process";
 const require = createRequire(import.meta.url);
 const platforms = {
   "darwin-arm64": {
-    packageName: "@wokalski/deslop-darwin-arm64",
+    packageName: "astcount-darwin-arm64",
     directory: "darwin-arm64"
   },
   "darwin-x64": {
-    packageName: "@wokalski/deslop-darwin-x64",
+    packageName: "astcount-darwin-x64",
     directory: "darwin-x64"
   },
   "linux-arm64": {
-    packageName: "@wokalski/deslop-linux-arm64-gnu",
+    packageName: "astcount-linux-arm64-gnu",
     directory: "linux-arm64-gnu"
   },
   "linux-x64": {
-    packageName: "@wokalski/deslop-linux-x64-gnu",
+    packageName: "astcount-linux-x64-gnu",
     directory: "linux-x64-gnu"
   }
 };
@@ -38,10 +38,10 @@ if (process.platform === "linux" && !isGlibc()) {
 let binary;
 try {
   const manifest = require.resolve(`${platform.packageName}/package.json`);
-  binary = `${dirname(manifest)}/bin/deslop`;
+  binary = `${dirname(manifest)}/bin/astcount`;
 } catch {
   const developmentBinary = fileURLToPath(
-    new URL(`../../platforms/${platform.directory}/bin/deslop`, import.meta.url)
+    new URL(`../../platforms/${platform.directory}/bin/astcount`, import.meta.url)
   );
   if (existsSync(developmentBinary)) {
     binary = developmentBinary;
@@ -67,6 +67,6 @@ function isGlibc() {
 }
 
 function fail(message) {
-  console.error(`deslop: ${message}`);
+  console.error(`astcount: ${message}`);
   process.exit(1);
 }

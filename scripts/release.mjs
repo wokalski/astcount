@@ -21,7 +21,7 @@ if (command === "check") {
     fail("usage: release.mjs stage <platform> <binary>");
   }
   await checkVersions();
-  const destination = join(root, "npm", "platforms", platform, "bin", "deslop");
+  const destination = join(root, "npm", "platforms", platform, "bin", "astcount");
   await mkdir(dirname(destination), { recursive: true });
   await copyFile(source, destination);
   await chmod(destination, 0o755);
@@ -40,7 +40,7 @@ async function checkVersions(expected) {
   }
 
   const packagePaths = [
-    join(root, "npm", "deslop", "package.json"),
+    join(root, "npm", "astcount", "package.json"),
     ...platforms.map((platform) =>
       join(root, "npm", "platforms", platform, "package.json")
     )
@@ -61,6 +61,6 @@ async function checkVersions(expected) {
 }
 
 function fail(message) {
-  console.error(`deslop release: ${message}`);
+  console.error(`astcount release: ${message}`);
   process.exit(1);
 }

@@ -1,12 +1,12 @@
 {
-  "name": "@wokalski/deslop-linux-arm64-gnu",
+  "name": "astcount-linux-arm64-gnu",
   "version": "0.1.0",
-  "description": "Native deslop binary for Linux arm64 (glibc)",
+  "description": "Native astcount binary for Linux arm64 (glibc)",
   "license": "MIT",
   "os": ["linux"],
   "cpu": ["arm64"],
   "libc": ["glibc"],
-  "files": ["bin/deslop"],
-  "repository": "git+https://github.com/wokalski/deslop.git",
+  "files": ["bin/astcount"],
+  "repository": "git+https://github.com/wokalski/astcount.git",
   "publishConfig": { "access": "public" }
 }
