@@ -12,21 +12,23 @@ benchmark for whether a refactor made code structurally simpler.
 
 ## Install
 
-Run directly or install permanently with Nix:
+Run the native binary with Bun:
 
 ```console
-nix run github:wokalski/astcount -- .
-nix profile install github:wokalski/astcount
+bunx astcount .
 ```
 
-The npm distribution uses the same native Rust binary:
+The registry package selects and downloads the matching native Rust binary
+without running a lifecycle script. Linux glibc on x64/arm64 and macOS on
+Intel/Apple Silicon are supported.
+
+Run directly or install permanently with Nix, using the public Cachix cache:
 
 ```console
-npm install --global astcount
-astcount .
+nix run --extra-substituters https://astcount.cachix.org --extra-trusted-public-keys astcount.cachix.org-1:NgwAPl0WX9xB3qatDahUC8T0R9jcEuwOFhgdrwV/lk8= github:wokalski/astcount -- .
+nix profile install --extra-substituters https://astcount.cachix.org --extra-trusted-public-keys astcount.cachix.org-1:NgwAPl0WX9xB3qatDahUC8T0R9jcEuwOFhgdrwV/lk8= github:wokalski/astcount
 ```
 
-Linux glibc on x64/arm64 and macOS on Intel/Apple Silicon are supported by npm.
 Building from source and Nix additionally remain available on every system in
 the flake.
 
