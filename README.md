@@ -3,6 +3,13 @@
 `astcount` is a fast, polyglot syntax-tree node counter. It measures program size by
 parsing source files with Tree-sitter instead of counting physical lines.
 
+The motivation is simple: syntax-tree node count is a rough, objective proxy for
+program complexity, and it is harder to game than line or character count.
+Reformatting, removing blank lines, or shortening identifiers can dramatically
+change those textual metrics without simplifying the program, while leaving its
+syntax tree largely unchanged. `astcount` therefore works well as a directional
+benchmark for whether a refactor made code structurally simpler.
+
 ## Install
 
 Run directly or install permanently with Nix:
